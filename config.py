@@ -41,13 +41,14 @@ def my_config():
     ################################ GPU ################################
     # gpus = "0"
     # os.environ['CUDA_VISIBLE_DEVICES'] = gpus
+    use_cudnn = False
     ########################## Skeleton Setting #########################
     batch_size = 128
     channel_num = 3
     person_num = 2
     joint_num = 25
     max_frame = 50
-    num_workers = 4
+    num_workers = 32
     data_path = os.path.join('..', 'data', 'pstl', split)
     train_list = os.path.join(data_path, 'train_position.npy')  ## your data path
     test_list = os.path.join(data_path, 'val_position.npy')

@@ -26,6 +26,10 @@ setup_seed(1)
 class BaseProcessor:
 
     @ex.capture
+    def configure_backend(self, use_cudnn):
+        torch.backends.cudnn.enabled = use_cudnn
+
+    @ex.capture
     def load_data(self,train_list,train_label,test_list,test_label,batch_size,label_percent,num_workers):
         self.dataset = dict()
         self.data_loader = dict()
@@ -58,6 +62,7 @@ class BaseProcessor:
             model.load_state_dict(pretrained_dict)
 
     def initialize(self):
+        self.configure_backend()
         self.load_data()
         self.load_model()
         self.load_optim()
