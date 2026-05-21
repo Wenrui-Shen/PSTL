@@ -104,7 +104,7 @@ if __name__ == '__main__':
         '--data_path', default='../data/nturgbd_raw/nturgb+d_skeletons/')
     parser.add_argument(
         '--ignored_sample_path',
-        default='../data/nturgbd_raw/NTU_RGBD_samples_with_missing_skeletons.txt')
+        default='../data/nturgbd_raw/samples_with_missing_skeletons.txt')
     parser.add_argument('--out_folder', default='../data/pstl')
 
     benchmark = ['xsub', 'xview']
