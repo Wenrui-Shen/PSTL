@@ -26,7 +26,7 @@ setup_seed(1)
 class BaseProcessor:
 
     @ex.capture
-    def load_data(self,train_list,train_label,test_list,test_label,batch_size,label_percent):
+    def load_data(self,train_list,train_label,test_list,test_label,batch_size,label_percent,num_workers):
         self.dataset = dict()
         self.data_loader = dict()
 
@@ -37,13 +37,13 @@ class BaseProcessor:
         self.data_loader['train'] = torch.utils.data.DataLoader(
             dataset=self.dataset['train'],
             batch_size=batch_size,
-            num_workers=32,
+            num_workers=num_workers,
             shuffle=True)
 
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=self.dataset['test'],
             batch_size=batch_size,
-            num_workers=32,
+            num_workers=num_workers,
             shuffle=False)
         
         # self.data_loader['semi'] = torch.utils.data.DataLoader(
