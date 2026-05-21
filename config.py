@@ -34,7 +34,7 @@ def my_config():
     edge_importance_weighting = True
     ############################ down stream ############################
     weight_path = './output/weight/v'+version+'_epoch_150_pretrain.pt' ## your weight path
-    train_mode = 'pretrain'  # lp / finetune / semi
+    train_mode = 'pretrain'  # pretrain / skeletonbt / lp / finetune / semi
     log_path = './output/log/v'+version+'_'+train_mode+'.log'
     result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_'
     label_path = './result/'+dataset+'/'+split+'/label/label.pkl'

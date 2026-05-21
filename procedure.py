@@ -405,6 +405,12 @@ class BTProcessor(BaseProcessor):
         self.log.update_batch("log/pretrain/"+mode+"_bt_loss", BTloss.item())
         return BTloss
 
+    def skeleton_aug(self, data):
+        data = shear(crop(data))
+        data = random_rotate(data)
+        data = random_spatial_flip(data)
+        return data
+
     @ex.capture
     def train_epoch(self, epoch, pretrain_epoch, pretrain_lr):
         self.encoder.train()
@@ -423,23 +429,17 @@ class BTProcessor(BaseProcessor):
             ignore_joint = central_spacial_mask()
 
             # input1
-            input1 = shear(crop(data))
-            input1 = random_rotate(input1)
-            input1 = random_spatial_flip(input1)
+            input1 = self.skeleton_aug(data)
             feat1 = self.encoder(input1)
 
             # input2
-            input2 = shear(crop(data))
-            input2 = random_rotate(input2)
-            input2 = random_spatial_flip(input2)
+            input2 = self.skeleton_aug(data)
             # MATM
             input2 = motion_att_temp_mask(input2)
             feat2 = self.encoder(input2)
 
             # input3
-            input3 = shear(crop(data))
-            input3 = random_rotate(input3)
-            input3 = random_spatial_flip(input3)
+            input3 = self.skeleton_aug(data)
             # CSM
             feat3 = self.encoder(input3, ignore_joint)
 
@@ -473,10 +473,42 @@ class BTProcessor(BaseProcessor):
         self.optimize()
 
 
+class SkeletonBTProcessor(BTProcessor):
+
+    @ex.capture
+    def train_epoch(self, epoch, pretrain_epoch, pretrain_lr):
+        self.encoder.train()
+        self.btwins_head.train()
+
+        loader = self.data_loader['train']
+        self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=pretrain_lr)
+
+        for data, label in tqdm(loader):
+            # load data
+            n,c,t,v,m = data.shape
+            data = data.type(torch.FloatTensor).cuda()
+            data = get_stream(data)
+
+            # SkeletonBT baseline: two ordinary augmented views, no CSM or MATM.
+            input1 = self.skeleton_aug(data)
+            input2 = self.skeleton_aug(data)
+
+            feat1 = self.encoder(input1)
+            feat2 = self.encoder(input2)
+
+            loss = self.btwins_batch(feat1, feat2, mode='skeletonbt')
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+
 # %%
 @ex.automain
 def main(train_mode):
-    if "pretrain" in train_mode:
+    if "skeletonbt" in train_mode:
+        p = SkeletonBTProcessor()
+    elif "pretrain" in train_mode:
         p = BTProcessor()
     elif "lp" in train_mode:
         p = RecognitionProcessor()
