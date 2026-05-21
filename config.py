@@ -47,10 +47,11 @@ def my_config():
     person_num = 2
     joint_num = 25
     max_frame = 50
-    train_list = 'data/train_position.npy'  ## your data path 
-    test_list = 'data/val_position.npy'
-    train_label = 'data/train_label.pkl'
-    test_label = 'data/val_label.pkl'
+    data_path = os.path.join('..', 'data', 'pstl', split)
+    train_list = os.path.join(data_path, 'train_position.npy')  ## your data path
+    test_list = os.path.join(data_path, 'val_position.npy')
+    train_label = os.path.join(data_path, 'train_label.pkl')
+    test_label = os.path.join(data_path, 'val_label.pkl')
     ########################### Data Augmentation #########################
     temperal_padding_ratio = 6
     shear_amp = 1
