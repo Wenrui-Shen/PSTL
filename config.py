@@ -16,7 +16,7 @@ def my_config():
     pretrain_epoch = 150
     ft_epoch = 150
     lp_epoch = 150
-    pretrain_lr = 2e-2
+    pretrain_lr = 5e-3
     lp_lr = 0.01
     ft_lr = 5e-3
     label_percent = 0.1
@@ -43,7 +43,7 @@ def my_config():
     # os.environ['CUDA_VISIBLE_DEVICES'] = gpus
     use_cudnn = False
     ########################## Skeleton Setting #########################
-    batch_size = 512
+    batch_size = 128
     channel_num = 3
     person_num = 2
     joint_num = 25
