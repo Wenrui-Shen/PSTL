@@ -17,6 +17,9 @@ def my_config():
     ft_epoch = 150
     lp_epoch = 150
     pretrain_lr = 2.5e-3
+    auto_scale_pretrain_lr = True
+    base_pretrain_lr = 5e-3
+    base_global_batch_size = 128
     lp_lr = 0.01
     ft_lr = 5e-3
     label_percent = 0.1
@@ -43,6 +46,10 @@ def my_config():
     gatr_checkpoint_blocks = True
     ############################ down stream ############################
     weight_path = './output/weight/v'+version+'_epoch_150_pretrain.pt' ## your weight path
+    checkpoint_path = './output/weight/v'+version+'_checkpoint.pt'
+    resume = False
+    resume_path = checkpoint_path
+    checkpoint_interval = 10
     train_mode = 'pretrain'  # pretrain / gatr / lp / finetune / semi
     log_path = './output/log/v'+version+'_'+train_mode+'.log'
     result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_'

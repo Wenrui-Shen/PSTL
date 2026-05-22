@@ -3,17 +3,41 @@ from model import *
 from dataset import DataSet, Feeder_semi
 from logger import Log
 
+import os
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 import numpy as np
 import random
 from tqdm import tqdm
 from einops import rearrange, repeat
 from math import pi, cos
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 from module.gcn.st_gcn import Model
 from module.gatr_encoder import SkeletonGATrEncoder
+
+
+def strip_torchrun_args():
+    cleaned = [sys.argv[0]]
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ('--local-rank', '--local_rank'):
+            skip_next = True
+            continue
+        if arg.startswith('--local-rank=') or arg.startswith('--local_rank='):
+            continue
+        cleaned.append(arg)
+    sys.argv = cleaned
+
+
+strip_torchrun_args()
 
 def setup_seed(seed):
      torch.manual_seed(seed)
@@ -23,6 +47,81 @@ def setup_seed(seed):
      torch.backends.cudnn.deterministic = True
     
 setup_seed(1)
+
+
+def setup_distributed():
+    if int(os.environ.get('WORLD_SIZE', '1')) > 1:
+        local_rank = int(os.environ['LOCAL_RANK'])
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend='nccl')
+
+
+def cleanup_distributed():
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def is_distributed():
+    return dist.is_available() and dist.is_initialized()
+
+
+def get_rank():
+    return dist.get_rank() if is_distributed() else 0
+
+
+def get_world_size():
+    return dist.get_world_size() if is_distributed() else 1
+
+
+def get_local_rank():
+    return int(os.environ.get('LOCAL_RANK', '0'))
+
+
+def is_main_process():
+    return get_rank() == 0
+
+
+def progress(loader):
+    return tqdm(loader, disable=not is_main_process())
+
+
+def wrap_ddp(module):
+    if not is_distributed():
+        return module
+    return DDP(module, device_ids=[get_local_rank()], output_device=get_local_rank())
+
+
+def unwrap_model(module):
+    return module.module if isinstance(module, DDP) else module
+
+
+class NoOpLog:
+    def update_batch(self, name, value):
+        pass
+
+    def update_epoch(self, *args, **kwargs):
+        pass
+
+
+@ex.capture
+def get_pretrain_lr(
+    pretrain_lr,
+    auto_scale_pretrain_lr,
+    base_pretrain_lr,
+    base_global_batch_size,
+    batch_size,
+):
+    if not auto_scale_pretrain_lr:
+        return pretrain_lr
+    global_batch_size = batch_size * get_world_size()
+    scaled_lr = base_pretrain_lr * global_batch_size / base_global_batch_size
+    if is_main_process():
+        print(
+            'Auto-scaled pretrain lr: {} '
+            '(global_batch_size={}, base_lr={}, base_global_batch_size={})'
+            .format(scaled_lr, global_batch_size, base_pretrain_lr, base_global_batch_size)
+        )
+    return scaled_lr
 
 
 @ex.capture
@@ -79,12 +178,14 @@ class BaseProcessor:
         self.dataset['train'] = DataSet(train_list, train_label)
         self.dataset['test'] = DataSet(test_list, test_label)
         # self.dataset['semi'] = Feeder_semi(train_list, train_label, label_percent)
+        self.train_sampler = DistributedSampler(self.dataset['train'], shuffle=True) if is_distributed() else None
 
         self.data_loader['train'] = torch.utils.data.DataLoader(
             dataset=self.dataset['train'],
             batch_size=batch_size,
             num_workers=num_workers,
-            shuffle=True)
+            shuffle=self.train_sampler is None,
+            sampler=self.train_sampler)
 
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=self.dataset['test'],
@@ -100,20 +201,30 @@ class BaseProcessor:
         
     def load_weights(self, model=None, weight_path=None):
         if weight_path:
-            pretrained_dict = torch.load(weight_path)
+            pretrained_dict = torch.load(weight_path, map_location='cuda:{}'.format(get_local_rank()))
             model.load_state_dict(pretrained_dict)
 
     def initialize(self):
+        self.start_epoch = 0
         self.configure_backend()
         self.load_data()
         self.load_model()
         self.load_optim()
-        self.log = Log()
+        self.load_resume()
+        self.log = Log() if is_main_process() else NoOpLog()
+
+    def set_sampler_epoch(self, epoch):
+        if hasattr(self, 'train_sampler') and self.train_sampler is not None:
+            self.train_sampler.set_epoch(epoch)
+
+    def load_resume(self):
+        pass
     
     @ex.capture
     def optimize(self, epoch_num):
         for epoch in range(epoch_num):
             self.epoch = epoch
+            self.set_sampler_epoch(epoch)
             self.train_epoch()
             self.test_epoch()
     
@@ -145,6 +256,7 @@ class RecognitionProcessor(BaseProcessor):
         self.encoder = self.encoder.cuda()
         self.classifier = Linear().cuda()
         self.load_weights(self.encoder, weight_path)
+        self.classifier = wrap_ddp(self.classifier)
     
     @ex.capture
     def load_optim(self, lp_lr, lp_epoch):
@@ -162,7 +274,7 @@ class RecognitionProcessor(BaseProcessor):
         self.classifier.train()
 
         loader = self.data_loader['train']
-        for data, label in tqdm(loader):
+        for data, label in progress(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
             data = get_stream(data)
@@ -197,7 +309,7 @@ class RecognitionProcessor(BaseProcessor):
         r_path = result_path + str(epoch) + '_result.pkl'
 
         loader = self.data_loader['test']
-        for data, label in tqdm(loader):
+        for data, label in progress(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
             label_list.append(label)
@@ -215,7 +327,7 @@ class RecognitionProcessor(BaseProcessor):
             self.log.update_batch("log/test/cls_acc", acc.item())
             self.log.update_batch("log/test/cls_loss", loss.item())
 
-        if save_lp:
+        if save_lp and is_main_process():
             torch.save(result_list, r_path)
             torch.save(label_list, label_path)
 
@@ -226,8 +338,10 @@ class RecognitionProcessor(BaseProcessor):
     @ex.capture
     def optimize(self,lp_epoch):
         for epoch in range(lp_epoch):
-            print("epoch:",epoch)
+            if is_main_process():
+                print("epoch:",epoch)
             self.epoch = epoch
+            self.set_sampler_epoch(epoch)
             self.train_epoch(epoch)
             self.test_epoch(epoch)
             lr = self.optimizer.state_dict()['param_groups'][0]['lr']
@@ -242,6 +356,8 @@ class SemiProcessor(BaseProcessor):
         self.encoder = self.encoder.cuda()
         self.classifier = Linear().cuda()
         self.load_weights(self.encoder, weight_path)
+        self.encoder = wrap_ddp(self.encoder)
+        self.classifier = wrap_ddp(self.classifier)
     
     @ex.capture
     def load_optim(self, ft_lr, ft_epoch):
@@ -258,7 +374,7 @@ class SemiProcessor(BaseProcessor):
         self.encoder.train()
         self.classifier.train()
         loader = self.data_loader['semi']
-        for data, label in tqdm(loader):
+        for data, label in progress(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
             data = get_stream(data)
@@ -293,7 +409,7 @@ class SemiProcessor(BaseProcessor):
         r_path = result_path + str(epoch) + '_semi10_result.pkl'
 
         loader = self.data_loader['test']
-        for data, label in tqdm(loader):
+        for data, label in progress(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
             label_list.append(label)
@@ -310,14 +426,16 @@ class SemiProcessor(BaseProcessor):
             self.log.update_batch("log/semi_test/cls_acc", acc.item())
             self.log.update_batch("log/semi_test/cls_loss", loss.item())
 
-        if save_semi:
+        if save_semi and is_main_process():
             torch.save(result_list, r_path)
             torch.save(label_list, label_path)
     
     @ex.capture
     def optimize(self,lp_epoch):
         for epoch in range(lp_epoch):
-            print("epoch:",epoch)
+            if is_main_process():
+                print("epoch:",epoch)
+            self.set_sampler_epoch(epoch)
             self.train_epoch()
             self.test_epoch(epoch)
             lr = self.optimizer.state_dict()['param_groups'][0]['lr']
@@ -332,6 +450,8 @@ class FTProcessor(BaseProcessor):
         self.encoder = self.encoder.cuda()
         self.classifier = Linear().cuda()
         self.load_weights(self.encoder, weight_path)
+        self.encoder = wrap_ddp(self.encoder)
+        self.classifier = wrap_ddp(self.classifier)
     
     @ex.capture
     def load_optim(self, ft_lr, ft_epoch):
@@ -348,7 +468,7 @@ class FTProcessor(BaseProcessor):
         self.encoder.train()
         self.classifier.train()
         loader = self.data_loader['train']
-        for data, label in tqdm(loader):
+        for data, label in progress(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
             data = get_stream(data)
@@ -382,7 +502,7 @@ class FTProcessor(BaseProcessor):
         r_path = result_path + str(epoch) + '_finetune_result.pkl'
 
         loader = self.data_loader['test']
-        for data, label in tqdm(loader):
+        for data, label in progress(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
             label_list.append(label)
@@ -399,13 +519,15 @@ class FTProcessor(BaseProcessor):
             self.log.update_batch("log/test/cls_acc", acc.item())
             self.log.update_batch("log/test/cls_loss", loss.item())
 
-        if save_finetune:
+        if save_finetune and is_main_process():
             torch.save(result_list, r_path)
             torch.save(label_list, label_path)
     @ex.capture
     def optimize(self,lp_epoch):
         for epoch in range(lp_epoch):
-            print("epoch:",epoch)
+            if is_main_process():
+                print("epoch:",epoch)
+            self.set_sampler_epoch(epoch)
             self.train_epoch()
             self.test_epoch(epoch)
             lr = self.optimizer.state_dict()['param_groups'][0]['lr']
@@ -420,21 +542,54 @@ class BTProcessor(BaseProcessor):
         self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
         self.btwins_head = BTwins().cuda()
+        self.encoder = wrap_ddp(self.encoder)
+        self.btwins_head = wrap_ddp(self.btwins_head)
 
     @ex.capture
-    def load_optim(self, pretrain_lr, pretrain_epoch, weight_decay):
+    def load_optim(self, pretrain_epoch, weight_decay):
+        self.pretrain_lr = get_pretrain_lr()
         self.optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
             {'params': self.btwins_head.parameters()},
             ], 
             weight_decay=weight_decay,
-            lr=pretrain_lr)
+            lr=self.pretrain_lr)
 
     def btwins_batch(self, feat1, feat2, mode):
         BTloss = self.btwins_head(feat1, feat2)
         BTloss = torch.mean(BTloss)
         self.log.update_batch("log/pretrain/"+mode+"_bt_loss", BTloss.item())
         return BTloss
+
+    @ex.capture
+    def load_resume(self, resume, resume_path):
+        if not resume:
+            return
+        if not os.path.exists(resume_path):
+            raise FileNotFoundError('Resume checkpoint not found: {}'.format(resume_path))
+        checkpoint = torch.load(
+            resume_path,
+            map_location='cuda:{}'.format(get_local_rank()))
+        unwrap_model(self.encoder).load_state_dict(checkpoint['encoder'])
+        unwrap_model(self.btwins_head).load_state_dict(checkpoint['btwins_head'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.start_epoch = checkpoint['epoch'] + 1
+        if is_main_process():
+            print('Resumed from {} at epoch {}'.format(resume_path, self.start_epoch))
+
+    @ex.capture
+    def save_checkpoint(self, epoch, checkpoint_path):
+        if not is_main_process():
+            return
+        checkpoint_dir = os.path.dirname(checkpoint_path)
+        if checkpoint_dir:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+        torch.save({
+            'epoch': epoch,
+            'encoder': unwrap_model(self.encoder).state_dict(),
+            'btwins_head': unwrap_model(self.btwins_head).state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+        }, checkpoint_path)
 
     def skeleton_aug(self, data):
         data = shear(crop(data))
@@ -456,9 +611,9 @@ class BTProcessor(BaseProcessor):
         self.btwins_head.train()
 
         loader = self.data_loader['train']
-        self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=pretrain_lr)
+        self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=self.pretrain_lr)
         
-        for data, label in tqdm(loader):
+        for data, label in progress(loader):
             # load data
             n,c,t,v,m = data.shape
             data = data.type(torch.FloatTensor).cuda()
@@ -493,14 +648,20 @@ class BTProcessor(BaseProcessor):
             self.optimizer.step()
     @ex.capture
     def save_model(self, epoch,version):
-        torch.save(self.encoder.state_dict(), f"output/weight/v"+version+"_epoch_"+str(epoch+1)+"_pretrain.pt")
+        if is_main_process():
+            os.makedirs('output/weight', exist_ok=True)
+            torch.save(unwrap_model(self.encoder).state_dict(), f"output/weight/v"+version+"_epoch_"+str(epoch+1)+"_pretrain.pt")
         
     @ex.capture
-    def optimize(self, pretrain_epoch):
-        for epoch in range(pretrain_epoch):
-            print("epoch:",epoch)
+    def optimize(self, pretrain_epoch, checkpoint_interval):
+        for epoch in range(self.start_epoch, pretrain_epoch):
+            if is_main_process():
+                print("epoch:",epoch)
             self.epoch = epoch
+            self.set_sampler_epoch(epoch)
             self.train_epoch(epoch=epoch)
+            if (epoch + 1) % checkpoint_interval == 0:
+                self.save_checkpoint(epoch)
             if epoch+1 == pretrain_epoch:
                 self.save_model(epoch)
             lr = self.optimizer.state_dict()['param_groups'][0]['lr']
@@ -518,6 +679,8 @@ class GATrProcessor(BTProcessor):
         self.encoder = build_encoder(encoder_type='gatr')
         self.encoder = self.encoder.cuda()
         self.btwins_head = BTwins().cuda()
+        self.encoder = wrap_ddp(self.encoder)
+        self.btwins_head = wrap_ddp(self.btwins_head)
 
     @ex.capture
     def train_epoch(self, epoch, pretrain_epoch, pretrain_lr):
@@ -525,9 +688,9 @@ class GATrProcessor(BTProcessor):
         self.btwins_head.train()
 
         loader = self.data_loader['train']
-        self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=pretrain_lr)
+        self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=self.pretrain_lr)
 
-        for data, label in tqdm(loader):
+        for data, label in progress(loader):
             # load data
             n,c,t,v,m = data.shape
             data = data.type(torch.FloatTensor).cuda()
@@ -550,16 +713,20 @@ class GATrProcessor(BTProcessor):
 # %%
 @ex.automain
 def main(train_mode):
-    if "gatr" in train_mode:
-        p = GATrProcessor()
-    elif "pretrain" in train_mode:
-        p = BTProcessor()
-    elif "lp" in train_mode:
-        p = RecognitionProcessor()
-    elif "finetune" in train_mode:
-        p = FTProcessor()
-    elif "semi" in train_mode:
-        p = SemiProcessor()
-    else:
-        print('train_mode error')
-    p.start()
+    setup_distributed()
+    try:
+        if "gatr" in train_mode:
+            p = GATrProcessor()
+        elif "pretrain" in train_mode:
+            p = BTProcessor()
+        elif "lp" in train_mode:
+            p = RecognitionProcessor()
+        elif "finetune" in train_mode:
+            p = FTProcessor()
+        elif "semi" in train_mode:
+            p = SemiProcessor()
+        else:
+            raise ValueError('train_mode error')
+        p.start()
+    finally:
+        cleanup_distributed()
