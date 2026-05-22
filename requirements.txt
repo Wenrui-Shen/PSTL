@@ -1,5 +1,6 @@
 sacred
 tqdm
 einops
-torch==1.11.0
+opt_einsum
+torch>=2.0
 numpy
