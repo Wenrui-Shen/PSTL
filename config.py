@@ -34,12 +34,13 @@ def my_config():
     }
     edge_importance_weighting = True
     ############################## GATr ################################
-    gatr_num_blocks = 4
+    gatr_num_blocks = 8
     gatr_hidden_mv_channels = 16
     gatr_point_s_channels = 256
     gatr_hidden_s_channels = 256
     gatr_out_mv_channels = 4
     gatr_num_heads = 8
+    gatr_checkpoint_blocks = True
     ############################ down stream ############################
     weight_path = './output/weight/v'+version+'_epoch_150_pretrain.pt' ## your weight path
     train_mode = 'pretrain'  # pretrain / gatr / lp / finetune / semi

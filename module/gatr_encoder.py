@@ -30,6 +30,7 @@ class SkeletonGATrEncoder(nn.Module):
         hidden_s_channels=256,
         num_blocks=4,
         num_heads=4,
+        checkpoint_blocks=False,
     ):
         super().__init__()
         self.num_frame = num_frame
@@ -47,6 +48,7 @@ class SkeletonGATrEncoder(nn.Module):
             attention=SelfAttentionConfig(num_heads=num_heads),
             mlp=MLPConfig(),
             num_blocks=num_blocks,
+            checkpoint_blocks=checkpoint_blocks,
             pos_encodings=(True, True),
         )
 

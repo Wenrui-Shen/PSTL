@@ -44,6 +44,7 @@ def build_encoder(
     gatr_hidden_s_channels,
     gatr_out_mv_channels,
     gatr_num_heads,
+    gatr_checkpoint_blocks,
 ):
     if encoder_type == 'stgcn':
         return Model(in_channels=in_channels, hidden_channels=hidden_channels,
@@ -60,7 +61,8 @@ def build_encoder(
                                    in_s_channels=gatr_point_s_channels,
                                    hidden_s_channels=gatr_hidden_s_channels,
                                    num_blocks=gatr_num_blocks,
-                                   num_heads=gatr_num_heads)
+                                   num_heads=gatr_num_heads,
+                                   checkpoint_blocks=gatr_checkpoint_blocks)
     raise ValueError('Invalid encoder_type: {}'.format(encoder_type))
 
 class BaseProcessor:
