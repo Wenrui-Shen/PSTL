@@ -34,7 +34,7 @@ def my_config():
     }
     edge_importance_weighting = True
     ############################## GATr ################################
-    gatr_num_blocks = 8
+    gatr_num_blocks = 4
     gatr_hidden_mv_channels = 16
     gatr_point_s_channels = 256
     gatr_hidden_s_channels = 256
