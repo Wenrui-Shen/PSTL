@@ -13,6 +13,7 @@ from einops import rearrange, repeat
 from math import pi, cos
 
 from module.gcn.st_gcn import Model
+from module.gatr_encoder import SkeletonGATrEncoder
 
 def setup_seed(seed):
      torch.manual_seed(seed)
@@ -22,6 +23,45 @@ def setup_seed(seed):
      torch.backends.cudnn.deterministic = True
     
 setup_seed(1)
+
+
+@ex.capture
+def build_encoder(
+    encoder_type,
+    in_channels,
+    hidden_channels,
+    hidden_dim,
+    hidden_size,
+    dropout,
+    graph_args,
+    edge_importance_weighting,
+    max_frame,
+    joint_num,
+    person_num,
+    gatr_num_blocks,
+    gatr_hidden_mv_channels,
+    gatr_point_s_channels,
+    gatr_hidden_s_channels,
+    gatr_out_mv_channels,
+    gatr_num_heads,
+):
+    if encoder_type == 'stgcn':
+        return Model(in_channels=in_channels, hidden_channels=hidden_channels,
+                     hidden_dim=hidden_dim, dropout=dropout,
+                     graph_args=graph_args,
+                     edge_importance_weighting=edge_importance_weighting)
+    if encoder_type == 'gatr':
+        return SkeletonGATrEncoder(hidden_size=hidden_size,
+                                   num_frame=max_frame,
+                                   num_joint=joint_num,
+                                   num_person=person_num,
+                                   out_mv_channels=gatr_out_mv_channels,
+                                   hidden_mv_channels=gatr_hidden_mv_channels,
+                                   in_s_channels=gatr_point_s_channels,
+                                   hidden_s_channels=gatr_hidden_s_channels,
+                                   num_blocks=gatr_num_blocks,
+                                   num_heads=gatr_num_heads)
+    raise ValueError('Invalid encoder_type: {}'.format(encoder_type))
 
 class BaseProcessor:
 
@@ -99,11 +139,7 @@ class RecognitionProcessor(BaseProcessor):
     @ex.capture
     def load_model(self,train_mode,weight_path,in_channels,hidden_channels,hidden_dim,
                     dropout,graph_args,edge_importance_weighting):
-        self.encoder = Model(in_channels=in_channels, hidden_channels=hidden_channels,
-                            hidden_dim=hidden_dim,dropout=dropout, 
-                            graph_args=graph_args,
-                            edge_importance_weighting=edge_importance_weighting,
-                            )
+        self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
         self.classifier = Linear().cuda()
         self.load_weights(self.encoder, weight_path)
@@ -200,11 +236,7 @@ class SemiProcessor(BaseProcessor):
     @ex.capture
     def load_model(self,train_mode,weight_path,in_channels,hidden_channels,hidden_dim,
                     dropout,graph_args,edge_importance_weighting):
-        self.encoder = Model(in_channels=in_channels, hidden_channels=hidden_channels,
-                            hidden_dim=hidden_dim,dropout=dropout, 
-                            graph_args=graph_args,
-                            edge_importance_weighting=edge_importance_weighting,
-                            )
+        self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
         self.classifier = Linear().cuda()
         self.load_weights(self.encoder, weight_path)
@@ -294,11 +326,7 @@ class FTProcessor(BaseProcessor):
     @ex.capture
     def load_model(self,train_mode,weight_path,in_channels,hidden_channels,hidden_dim,
                     dropout,graph_args,edge_importance_weighting):
-        self.encoder = Model(in_channels=in_channels, hidden_channels=hidden_channels,
-                            hidden_dim=hidden_dim,dropout=dropout, 
-                            graph_args=graph_args,
-                            edge_importance_weighting=edge_importance_weighting,
-                            )
+        self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
         self.classifier = Linear().cuda()
         self.load_weights(self.encoder, weight_path)
@@ -387,11 +415,7 @@ class BTProcessor(BaseProcessor):
     def load_model(self,in_channels,hidden_channels,hidden_dim,dropout,
                     graph_args,edge_importance_weighting):
 
-        self.encoder = Model(in_channels=in_channels, hidden_channels=hidden_channels,
-                                    hidden_dim=hidden_dim,dropout=dropout, 
-                                    graph_args=graph_args,
-                                    edge_importance_weighting=edge_importance_weighting,
-                                    )
+        self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
         self.btwins_head = BTwins().cuda()
 
@@ -413,6 +437,14 @@ class BTProcessor(BaseProcessor):
     def skeleton_aug(self, data):
         data = shear(crop(data))
         data = random_rotate(data)
+        data = random_spatial_flip(data)
+        return data
+
+    def e3_aug(self, data):
+        return random_e3_transform(data)
+
+    def non_e3_aug(self, data):
+        data = shear(crop(data))
         data = random_spatial_flip(data)
         return data
 
@@ -478,7 +510,12 @@ class BTProcessor(BaseProcessor):
         self.optimize()
 
 
-class SkeletonBTProcessor(BTProcessor):
+class GATrProcessor(BTProcessor):
+
+    def load_model(self):
+        self.encoder = build_encoder(encoder_type='gatr')
+        self.encoder = self.encoder.cuda()
+        self.btwins_head = BTwins().cuda()
 
     @ex.capture
     def train_epoch(self, epoch, pretrain_epoch, pretrain_lr):
@@ -494,14 +531,14 @@ class SkeletonBTProcessor(BTProcessor):
             data = data.type(torch.FloatTensor).cuda()
             data = get_stream(data)
 
-            # SkeletonBT baseline: two ordinary augmented views, no CSM or MATM.
-            input1 = self.skeleton_aug(data)
-            input2 = self.skeleton_aug(data)
+            # E(3) view: global rigid transform. Non-E(3) view: temporal/shear/flip augmentation.
+            input1 = self.e3_aug(data)
+            input2 = self.non_e3_aug(data)
 
             feat1 = self.encoder(input1)
             feat2 = self.encoder(input2)
 
-            loss = self.btwins_batch(feat1, feat2, mode='skeletonbt')
+            loss = self.btwins_batch(feat1, feat2, mode='e3_non_e3')
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -511,8 +548,8 @@ class SkeletonBTProcessor(BTProcessor):
 # %%
 @ex.automain
 def main(train_mode):
-    if "skeletonbt" in train_mode:
-        p = SkeletonBTProcessor()
+    if "gatr" in train_mode:
+        p = GATrProcessor()
     elif "pretrain" in train_mode:
         p = BTProcessor()
     elif "lp" in train_mode:

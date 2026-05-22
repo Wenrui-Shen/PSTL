@@ -22,6 +22,7 @@ def my_config():
     label_percent = 0.1
     weight_decay = 1e-5
     hidden_size = 256
+    encoder_type = 'gatr'  # stgcn / gatr
     ############################## ST-GCN ###############################
     in_channels = 3
     hidden_channels = 16
@@ -32,9 +33,16 @@ def my_config():
     "strategy" : 'spatial'
     }
     edge_importance_weighting = True
+    ############################## GATr ################################
+    gatr_num_blocks = 4
+    gatr_hidden_mv_channels = 16
+    gatr_point_s_channels = 256
+    gatr_hidden_s_channels = 256
+    gatr_out_mv_channels = 4
+    gatr_num_heads = 4
     ############################ down stream ############################
     weight_path = './output/weight/v'+version+'_epoch_150_pretrain.pt' ## your weight path
-    train_mode = 'pretrain'  # pretrain / skeletonbt / lp / finetune / semi
+    train_mode = 'pretrain'  # pretrain / gatr / lp / finetune / semi
     log_path = './output/log/v'+version+'_'+train_mode+'.log'
     result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_'
     label_path = './result/'+dataset+'/'+split+'/label/label.pkl'
@@ -57,6 +65,8 @@ def my_config():
     ########################### Data Augmentation #########################
     temperal_padding_ratio = 6
     shear_amp = 1
+    e3_rotation_degree = 30
+    e3_translation_amp = 0.2
     mask_joint = 8
     mask_frame = 10
     ############################ Barlow Twins #############################

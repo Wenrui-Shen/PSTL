@@ -194,6 +194,43 @@ def random_rotate(data):
 
     return new_seq
 
+
+@ex.capture
+def random_e3_transform(data, e3_rotation_degree, e3_translation_amp):
+    angles = [
+        math.radians(random.uniform(-e3_rotation_degree, e3_rotation_degree))
+        for _ in range(3)
+    ]
+    ax, ay, az = angles
+    dtype = data.dtype
+    device = data.device
+
+    rx = torch.tensor(
+        [[1, 0, 0],
+         [0, cos(ax), -sin(ax)],
+         [0, sin(ax), cos(ax)]],
+        dtype=dtype,
+        device=device)
+    ry = torch.tensor(
+        [[cos(ay), 0, sin(ay)],
+         [0, 1, 0],
+         [-sin(ay), 0, cos(ay)]],
+        dtype=dtype,
+        device=device)
+    rz = torch.tensor(
+        [[cos(az), -sin(az), 0],
+         [sin(az), cos(az), 0],
+         [0, 0, 1]],
+        dtype=dtype,
+        device=device)
+    rotation = rz @ ry @ rx
+    output = torch.einsum('dc,nctvm->ndtvm', rotation, data)
+    translation = torch.empty(
+        1, 3, 1, 1, 1,
+        dtype=dtype,
+        device=device).uniform_(-e3_translation_amp, e3_translation_amp)
+    return output + translation
+
 @ex.capture
 def get_ignore_joint(mask_joint):
 
