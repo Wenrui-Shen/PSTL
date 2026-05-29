@@ -25,7 +25,7 @@ def my_config():
     ft_lr = 5e-3
     label_percent = 0.1
     weight_decay = 1e-5
-    hidden_size = 256
+    hidden_size = 128
     encoder_type = 'gatr'  # stgcn / gatr
     ############################## ST-GCN ###############################
     in_channels = 3
@@ -39,10 +39,10 @@ def my_config():
     edge_importance_weighting = True
     ############################## GATr ################################
     gatr_num_blocks = 4
-    gatr_hidden_mv_channels = 16
+    gatr_hidden_mv_channels = 128
     gatr_point_s_channels = 256
     gatr_hidden_s_channels = 256
-    gatr_out_mv_channels = 4
+    gatr_out_mv_channels = 128
     gatr_num_heads = 8
     gatr_checkpoint_blocks = True
     ############################ down stream ############################
