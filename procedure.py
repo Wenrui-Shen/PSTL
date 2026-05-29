@@ -119,21 +119,51 @@ class NoOpLog:
 
 
 @ex.capture
+def get_pretrain_accumulation_steps(
+    auto_accumulate_pretrain,
+    base_global_batch_size,
+    batch_size,
+):
+    if not auto_accumulate_pretrain:
+        return 1
+    per_step_global_batch_size = batch_size * get_world_size()
+    accumulation_steps = max(
+        1,
+        (base_global_batch_size + per_step_global_batch_size - 1)
+        // per_step_global_batch_size)
+    if is_main_process():
+        effective_global_batch_size = per_step_global_batch_size * accumulation_steps
+        print(
+            'Pretrain accumulation steps: {} '
+            '(per_step_global_batch_size={}, effective_global_batch_size={}, target_global_batch_size={})'
+            .format(
+                accumulation_steps,
+                per_step_global_batch_size,
+                effective_global_batch_size,
+                base_global_batch_size)
+        )
+    return accumulation_steps
+
+
+@ex.capture
 def get_pretrain_lr(
     pretrain_lr,
     auto_scale_pretrain_lr,
     base_pretrain_lr,
     base_global_batch_size,
     batch_size,
+    pretrain_accumulation_steps=None,
 ):
     if not auto_scale_pretrain_lr:
         return pretrain_lr
-    global_batch_size = batch_size * get_world_size()
+    if pretrain_accumulation_steps is None:
+        pretrain_accumulation_steps = get_pretrain_accumulation_steps()
+    global_batch_size = batch_size * get_world_size() * pretrain_accumulation_steps
     scaled_lr = base_pretrain_lr * global_batch_size / base_global_batch_size
     if is_main_process():
         print(
             'Auto-scaled pretrain lr: {} '
-            '(global_batch_size={}, base_lr={}, base_global_batch_size={})'
+            '(effective_global_batch_size={}, base_lr={}, base_global_batch_size={})'
             .format(scaled_lr, global_batch_size, base_pretrain_lr, base_global_batch_size)
         )
     return scaled_lr
@@ -569,7 +599,9 @@ class BTProcessor(BaseProcessor):
 
     @ex.capture
     def load_optim(self, pretrain_epoch, weight_decay):
-        self.pretrain_lr = get_pretrain_lr()
+        self.pretrain_accumulation_steps = get_pretrain_accumulation_steps()
+        self.pretrain_lr = get_pretrain_lr(
+            pretrain_accumulation_steps=self.pretrain_accumulation_steps)
         self.optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
             {'params': self.btwins_head.parameters()},
@@ -656,8 +688,11 @@ class BTProcessor(BaseProcessor):
 
         loader = self.data_loader['train']
         self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=self.pretrain_lr)
-        
-        for data, label in progress(loader):
+
+        accumulation_steps = getattr(self, 'pretrain_accumulation_steps', 1)
+        self.optimizer.zero_grad()
+
+        for batch_idx, (data, label) in enumerate(progress(loader)):
             # load data
             n,c,t,v,m = data.shape
             data = data.type(torch.FloatTensor).cuda()
@@ -685,11 +720,12 @@ class BTProcessor(BaseProcessor):
             loss_bt1 = self.btwins_batch(feat1, feat2, mode='temp_mask')
             loss_bt2 = self.btwins_batch(feat1, feat3, mode='joint_mask')
 
-            loss = loss_bt1 + loss_bt2
+            loss = (loss_bt1 + loss_bt2) / accumulation_steps
 
-            self.optimizer.zero_grad()
             loss.backward()
-            self.optimizer.step()
+            if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+                self.optimizer.step()
+                self.optimizer.zero_grad()
     @ex.capture
     def save_model(self, epoch,version):
         if is_main_process():
@@ -734,7 +770,10 @@ class GATrProcessor(BTProcessor):
         loader = self.data_loader['train']
         self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=self.pretrain_lr)
 
-        for data, label in progress(loader):
+        accumulation_steps = getattr(self, 'pretrain_accumulation_steps', 1)
+        self.optimizer.zero_grad()
+
+        for batch_idx, (data, label) in enumerate(progress(loader)):
             # load data
             n,c,t,v,m = data.shape
             data = data.type(torch.FloatTensor).cuda()
@@ -750,11 +789,16 @@ class GATrProcessor(BTProcessor):
             with torch.no_grad():
                 feat_non_e3 = self.encoder(input_non_e3)
 
-            loss = self.symmetric_infonce_batch(feat_raw, feat_e3, feat_non_e3, mode='raw_e3_non_e3')
+            loss = self.symmetric_infonce_batch(
+                feat_raw,
+                feat_e3,
+                feat_non_e3,
+                mode='raw_e3_non_e3') / accumulation_steps
 
-            self.optimizer.zero_grad()
             loss.backward()
-            self.optimizer.step()
+            if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
 
 # %%

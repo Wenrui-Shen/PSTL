@@ -18,6 +18,7 @@ def my_config():
     lp_epoch = 150
     pretrain_lr = 2.5e-3
     auto_scale_pretrain_lr = True
+    auto_accumulate_pretrain = True
     base_pretrain_lr = 5e-3
     base_global_batch_size = 128
     lp_lr = 0.01
