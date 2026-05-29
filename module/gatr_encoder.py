@@ -39,14 +39,15 @@ class SkeletonGATrEncoder(nn.Module):
 
         self.spatial_tokens = num_joint * num_person
         self.temporal_tokens = num_frame
+        self.scalar_channels = 1
 
         self.time_gatr = GATr(
             in_mv_channels=self.spatial_tokens,
             out_mv_channels=out_mv_channels,
             hidden_mv_channels=hidden_mv_channels,
-            in_s_channels=None,
+            in_s_channels=self.scalar_channels,
             out_s_channels=None,
-            hidden_s_channels=None,
+            hidden_s_channels=self.scalar_channels,
             attention=SelfAttentionConfig(num_heads=num_heads),
             mlp=MLPConfig(),
             num_blocks=num_blocks,
@@ -57,9 +58,9 @@ class SkeletonGATrEncoder(nn.Module):
             in_mv_channels=self.temporal_tokens,
             out_mv_channels=out_mv_channels,
             hidden_mv_channels=hidden_mv_channels,
-            in_s_channels=None,
+            in_s_channels=self.scalar_channels,
             out_s_channels=None,
-            hidden_s_channels=None,
+            hidden_s_channels=self.scalar_channels,
             attention=SelfAttentionConfig(num_heads=num_heads),
             mlp=MLPConfig(),
             num_blocks=num_blocks,
@@ -103,7 +104,8 @@ class SkeletonGATrEncoder(nn.Module):
 
         multivectors = point_multivectors.contiguous().view(n, t, self.spatial_tokens, 16)
 
-        time_output_mv, _ = self.time_gatr(multivectors, scalars=None)
+        time_scalars = multivectors.new_zeros(n, t, self.scalar_channels)
+        time_output_mv, _ = self.time_gatr(multivectors, scalars=time_scalars)
         time_token_features = time_output_mv.flatten(2)
         time_features = self.time_projection(time_token_features).mean(dim=1)
 
@@ -117,7 +119,8 @@ class SkeletonGATrEncoder(nn.Module):
             )
             space_multivectors = torch.cat([space_multivectors, padding], dim=2)
 
-        space_output_mv, _ = self.space_gatr(space_multivectors, scalars=None)
+        space_scalars = space_multivectors.new_zeros(n, self.spatial_tokens, self.scalar_channels)
+        space_output_mv, _ = self.space_gatr(space_multivectors, scalars=space_scalars)
         space_token_features = space_output_mv.flatten(2)
         space_features = self.space_projection(space_token_features).mean(dim=1)
 
