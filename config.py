@@ -25,7 +25,7 @@ def my_config():
     ft_lr = 5e-3
     label_percent = 0.1
     weight_decay = 1e-5
-    hidden_size = 1024
+    hidden_size = 128
     encoder_type = 'gatr'  # stgcn / gatr
     ############################## ST-GCN ###############################
     in_channels = 3

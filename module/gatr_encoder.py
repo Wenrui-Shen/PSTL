@@ -68,21 +68,28 @@ class SkeletonGATrEncoder(nn.Module):
         )
 
         mv_feature_size = out_mv_channels * 16
+        branch_feature_size = 128
         self.time_projection = nn.Sequential(
             nn.LayerNorm(mv_feature_size),
-            nn.Linear(mv_feature_size, hidden_size),
+            nn.Linear(mv_feature_size, 1024),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_size, hidden_size),
         )
         self.space_projection = nn.Sequential(
             nn.LayerNorm(mv_feature_size),
-            nn.Linear(mv_feature_size, hidden_size),
+            nn.Linear(mv_feature_size, 1024),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_size, hidden_size),
+        )
+        self.time_projector = nn.Sequential(
+            nn.LayerNorm(1024),
+            nn.Linear(1024, branch_feature_size),
+        )
+        self.space_projector = nn.Sequential(
+            nn.LayerNorm(1024),
+            nn.Linear(1024, branch_feature_size),
         )
         self.instance_projection = nn.Sequential(
-            nn.LayerNorm(hidden_size * 2),
-            nn.Linear(hidden_size * 2, hidden_size),
+            nn.LayerNorm(branch_feature_size * 2),
+            nn.Linear(branch_feature_size * 2, hidden_size),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_size, hidden_size),
         )
@@ -108,6 +115,7 @@ class SkeletonGATrEncoder(nn.Module):
         time_output_mv, _ = self.time_gatr(multivectors, scalars=time_scalars)
         time_token_features = time_output_mv.flatten(2)
         time_features = self.time_projection(time_token_features).mean(dim=1)
+        time_features = self.time_projector(time_features)
 
         space_multivectors = multivectors.transpose(1, 2).contiguous()
         if t < self.temporal_tokens:
@@ -123,6 +131,7 @@ class SkeletonGATrEncoder(nn.Module):
         space_output_mv, _ = self.space_gatr(space_multivectors, scalars=space_scalars)
         space_token_features = space_output_mv.flatten(2)
         space_features = self.space_projection(space_token_features).mean(dim=1)
+        space_features = self.space_projector(space_features)
 
         instance_features = torch.cat([time_features, space_features], dim=1)
         return self.instance_projection(instance_features)
