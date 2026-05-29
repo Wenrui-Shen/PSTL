@@ -16,7 +16,7 @@ def my_config():
     pretrain_epoch = 150
     ft_epoch = 150
     lp_epoch = 150
-    pretrain_lr = 2.5e-3
+    pretrain_lr = 5e-3
     auto_scale_pretrain_lr = True
     auto_accumulate_pretrain = True
     base_pretrain_lr = 5e-3
@@ -25,7 +25,7 @@ def my_config():
     ft_lr = 5e-3
     label_percent = 0.1
     weight_decay = 1e-5
-    hidden_size = 128
+    hidden_size = 1024
     encoder_type = 'gatr'  # stgcn / gatr
     ############################## ST-GCN ###############################
     in_channels = 3
@@ -38,11 +38,11 @@ def my_config():
     }
     edge_importance_weighting = True
     ############################## GATr ################################
-    gatr_num_blocks = 4
-    gatr_hidden_mv_channels = 128
+    gatr_num_blocks = 8
+    gatr_hidden_mv_channels = 256
     gatr_point_s_channels = 256
     gatr_hidden_s_channels = 256
-    gatr_out_mv_channels = 128
+    gatr_out_mv_channels = 256
     gatr_num_heads = 8
     gatr_checkpoint_blocks = True
     ############################ down stream ############################
@@ -60,7 +60,7 @@ def my_config():
     # os.environ['CUDA_VISIBLE_DEVICES'] = gpus
     use_cudnn = False
     ########################## Skeleton Setting #########################
-    batch_size = 64
+    batch_size = 128
     channel_num = 3
     person_num = 2
     joint_num = 25
@@ -79,6 +79,6 @@ def my_config():
     mask_joint = 8
     mask_frame = 10
     ############################ Barlow Twins #############################
-    pj_size = 2048
+    pj_size = 128
     lambd = 2e-4
     infonce_temperature = 0.2
