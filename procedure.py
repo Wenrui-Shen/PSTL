@@ -736,9 +736,12 @@ class GATrProcessor(BTProcessor):
 
             feat_raw = self.encoder(input_raw)
             feat_e3 = self.encoder(input_e3)
-            feat_non_e3 = self.encoder(input_non_e3)
+            with torch.no_grad():
+                feat_non_e3 = self.encoder(input_non_e3)
 
-            loss = self.infonce_batch(feat_raw, feat_e3, feat_non_e3, mode='raw_e3_non_e3')
+            loss_raw = self.infonce_batch(feat_raw, feat_e3, feat_non_e3, mode='raw_e3_non_e3')
+            loss_e3 = self.infonce_batch(feat_e3, feat_raw, feat_non_e3, mode='e3_raw_non_e3')
+            loss = loss_raw + loss_e3
 
             self.optimizer.zero_grad()
             loss.backward()
