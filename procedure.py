@@ -202,6 +202,12 @@ class BaseProcessor:
     def load_weights(self, model=None, weight_path=None):
         if weight_path:
             pretrained_dict = torch.load(weight_path, map_location='cuda:{}'.format(get_local_rank()))
+            if isinstance(pretrained_dict, dict) and 'encoder' in pretrained_dict:
+                pretrained_dict = pretrained_dict['encoder']
+            pretrained_dict = {
+                key.replace('module.', '', 1): value
+                for key, value in pretrained_dict.items()
+            }
             model.load_state_dict(pretrained_dict)
 
     def initialize(self):
@@ -562,6 +568,17 @@ class BTProcessor(BaseProcessor):
         return BTloss
 
     @ex.capture
+    def infonce_batch(self, anchor_feat, positive_feat, negative_feat, mode, infonce_temperature):
+        loss = self.btwins_head(
+            anchor_feat,
+            positive_feat,
+            negative_feat,
+            loss_type='infonce',
+            temperature=infonce_temperature)
+        self.log.update_batch("log/pretrain/"+mode+"_infonce_loss", loss.item())
+        return loss
+
+    @ex.capture
     def load_resume(self, resume, resume_path):
         if not resume:
             return
@@ -696,14 +713,16 @@ class GATrProcessor(BTProcessor):
             data = data.type(torch.FloatTensor).cuda()
             data = get_stream(data)
 
-            # E(3) view: global rigid transform. Non-E(3) view: temporal/shear/flip augmentation.
-            input1 = self.e3_aug(data)
-            input2 = self.non_e3_aug(data)
+            # Raw view is the anchor; E(3) view is positive; non-E(3) view is negative.
+            input_raw = data
+            input_e3 = self.e3_aug(data)
+            input_non_e3 = self.non_e3_aug(data)
 
-            feat1 = self.encoder(input1)
-            feat2 = self.encoder(input2)
+            feat_raw = self.encoder(input_raw)
+            feat_e3 = self.encoder(input_e3)
+            feat_non_e3 = self.encoder(input_non_e3)
 
-            loss = self.btwins_batch(feat1, feat2, mode='e3_non_e3')
+            loss = self.infonce_batch(feat_raw, feat_e3, feat_non_e3, mode='raw_e3_non_e3')
 
             self.optimizer.zero_grad()
             loss.backward()

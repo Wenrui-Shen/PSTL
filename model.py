@@ -60,7 +60,11 @@ class BTwins(nn.Module):
         self.bn = nn.BatchNorm1d(pj_size, affine=False)
         self.lambd = lambd
 
-    def forward(self, feat1, feat2):
+    def forward(self, feat1, feat2, negative_feat=None, loss_type='btwins', temperature=0.2):
+        if loss_type == 'infonce':
+            if negative_feat is None:
+                raise ValueError('negative_feat is required for InfoNCE loss')
+            return self.infonce(feat1, feat2, negative_feat, temperature=temperature)
         
         feat1 = self.projector(feat1)
         feat2 = self.projector(feat2)
@@ -75,6 +79,17 @@ class BTwins(nn.Module):
         BTloss = on_diag + self.lambd * off_diag
 
         return BTloss 
+
+    def infonce(self, anchor_feat, positive_feat, negative_feat, temperature=0.2):
+        anchor = F.normalize(self.projector(anchor_feat), dim=1)
+        positive = F.normalize(self.projector(positive_feat), dim=1)
+        negative = F.normalize(self.projector(negative_feat), dim=1)
+
+        positive_logits = torch.sum(anchor * positive, dim=1, keepdim=True)
+        negative_logits = anchor @ negative.T
+        logits = torch.cat([positive_logits, negative_logits], dim=1) / temperature
+        labels = torch.zeros(anchor.shape[0], dtype=torch.long, device=anchor.device)
+        return F.cross_entropy(logits, labels)
 
     def off_diagonal(self, x):
         # return a flattened view of the off-diagonal elements of a square matrix

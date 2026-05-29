@@ -80,3 +80,4 @@ def my_config():
     ############################ Barlow Twins #############################
     pj_size = 6144
     lambd = 2e-4
+    infonce_temperature = 0.2
