@@ -78,6 +78,6 @@ def my_config():
     mask_joint = 8
     mask_frame = 10
     ############################ Barlow Twins #############################
-    pj_size = 6144
+    pj_size = 2048
     lambd = 2e-4
     infonce_temperature = 0.2
