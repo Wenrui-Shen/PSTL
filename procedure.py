@@ -95,6 +95,21 @@ def unwrap_model(module):
     return module.module if isinstance(module, DDP) else module
 
 
+def normalize_gatr_state_dict_keys(state_dict):
+    replacements = {
+        '.attention.qkv_q_linear.': '.attention.qkv_module.q_linear.',
+        '.attention.qkv_k_linear.': '.attention.qkv_module.k_linear.',
+        '.attention.qkv_v_linear.': '.attention.qkv_module.v_linear.',
+    }
+    normalized = {}
+    for key, value in state_dict.items():
+        new_key = key
+        for old, new in replacements.items():
+            new_key = new_key.replace(old, new)
+        normalized[new_key] = value
+    return normalized
+
+
 class NoOpLog:
     def update_batch(self, name, value):
         pass
@@ -208,6 +223,7 @@ class BaseProcessor:
                 key.replace('module.', '', 1): value
                 for key, value in pretrained_dict.items()
             }
+            pretrained_dict = normalize_gatr_state_dict_keys(pretrained_dict)
             model.load_state_dict(pretrained_dict)
 
     def initialize(self):
