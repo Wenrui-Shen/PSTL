@@ -65,6 +65,10 @@ class BTwins(nn.Module):
             if negative_feat is None:
                 raise ValueError('negative_feat is required for InfoNCE loss')
             return self.infonce(feat1, feat2, negative_feat, temperature=temperature)
+        if loss_type == 'symmetric_infonce':
+            if negative_feat is None:
+                raise ValueError('negative_feat is required for symmetric InfoNCE loss')
+            return self.symmetric_infonce(feat1, feat2, negative_feat, temperature=temperature)
         
         feat1 = self.projector(feat1)
         feat2 = self.projector(feat2)
@@ -85,6 +89,22 @@ class BTwins(nn.Module):
         positive = F.normalize(self.projector(positive_feat), dim=1)
         negative = F.normalize(self.projector(negative_feat), dim=1)
 
+        return self.infonce_from_embeddings(anchor, positive, negative, temperature)
+
+    def symmetric_infonce(self, feat1, feat2, negative_feat, temperature=0.2):
+        features = torch.cat([feat1, feat2, negative_feat], dim=0)
+        projected = self.projector(features)
+        anchor, positive, negative = projected.chunk(3, dim=0)
+
+        anchor = F.normalize(anchor, dim=1)
+        positive = F.normalize(positive, dim=1)
+        negative = F.normalize(negative.detach(), dim=1)
+
+        loss_anchor = self.infonce_from_embeddings(anchor, positive, negative, temperature)
+        loss_positive = self.infonce_from_embeddings(positive, anchor, negative, temperature)
+        return loss_anchor + loss_positive
+
+    def infonce_from_embeddings(self, anchor, positive, negative, temperature):
         positive_logits = torch.sum(anchor * positive, dim=1, keepdim=True)
         negative_logits = torch.sum(anchor * negative, dim=1, keepdim=True)
         logits = torch.cat([positive_logits, negative_logits], dim=1) / temperature

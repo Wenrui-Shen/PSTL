@@ -595,6 +595,17 @@ class BTProcessor(BaseProcessor):
         return loss
 
     @ex.capture
+    def symmetric_infonce_batch(self, anchor_feat, positive_feat, negative_feat, mode, infonce_temperature):
+        loss = self.btwins_head(
+            anchor_feat,
+            positive_feat,
+            negative_feat,
+            loss_type='symmetric_infonce',
+            temperature=infonce_temperature)
+        self.log.update_batch("log/pretrain/"+mode+"_infonce_loss", loss.item())
+        return loss
+
+    @ex.capture
     def load_resume(self, resume, resume_path):
         if not resume:
             return
@@ -739,9 +750,7 @@ class GATrProcessor(BTProcessor):
             with torch.no_grad():
                 feat_non_e3 = self.encoder(input_non_e3)
 
-            loss_raw = self.infonce_batch(feat_raw, feat_e3, feat_non_e3, mode='raw_e3_non_e3')
-            loss_e3 = self.infonce_batch(feat_e3, feat_raw, feat_non_e3, mode='e3_raw_non_e3')
-            loss = loss_raw + loss_e3
+            loss = self.symmetric_infonce_batch(feat_raw, feat_e3, feat_non_e3, mode='raw_e3_non_e3')
 
             self.optimizer.zero_grad()
             loss.backward()
