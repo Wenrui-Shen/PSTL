@@ -25,6 +25,9 @@ def my_config():
     ft_lr = 5e-3
     label_percent = 0.1
     weight_decay = 1e-5
+    debug_gatr = False
+    debug_gatr_batches = 3
+    debug_gatr_interval = 0
     hidden_size = 128
     encoder_type = 'gatr'  # stgcn / gatr
     ############################## ST-GCN ###############################

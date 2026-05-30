@@ -85,6 +85,36 @@ def progress(loader):
     return tqdm(loader, disable=not is_main_process())
 
 
+def tensor_debug_stats(name, tensor):
+    with torch.no_grad():
+        detached = tensor.detach()
+        finite = torch.isfinite(detached)
+        finite_ratio = finite.float().mean().item()
+        if finite.any():
+            finite_values = detached[finite].float()
+            min_value = finite_values.min().item()
+            max_value = finite_values.max().item()
+            mean_value = finite_values.mean().item()
+            std_value = finite_values.std(unbiased=False).item()
+        else:
+            min_value = float('nan')
+            max_value = float('nan')
+            mean_value = float('nan')
+            std_value = float('nan')
+        print(
+            '[GATr debug] {} shape={} finite={:.6f} min={:.6g} max={:.6g} mean={:.6g} std={:.6g}'
+            .format(
+                name,
+                tuple(detached.shape),
+                finite_ratio,
+                min_value,
+                max_value,
+                mean_value,
+                std_value)
+        )
+        return bool(finite.all().item())
+
+
 def wrap_ddp(module):
     if not is_distributed():
         return module
@@ -638,6 +668,14 @@ class BTProcessor(BaseProcessor):
         return loss
 
     @ex.capture
+    def symmetric_infonce_debug(self, anchor_feat, positive_feat, negative_feat, infonce_temperature):
+        return unwrap_model(self.btwins_head).symmetric_infonce_debug(
+            anchor_feat,
+            positive_feat,
+            negative_feat,
+            temperature=infonce_temperature)
+
+    @ex.capture
     def load_resume(self, resume, resume_path):
         if not resume:
             return
@@ -682,7 +720,15 @@ class BTProcessor(BaseProcessor):
         return data
 
     @ex.capture
-    def train_epoch(self, epoch, pretrain_epoch, pretrain_lr):
+    def train_epoch(
+        self,
+        epoch,
+        pretrain_epoch,
+        pretrain_lr,
+        debug_gatr,
+        debug_gatr_batches,
+        debug_gatr_interval,
+    ):
         self.encoder.train()
         self.btwins_head.train()
 
@@ -784,18 +830,73 @@ class GATrProcessor(BTProcessor):
             input_e3 = self.e3_aug(data)
             input_non_e3 = self.non_e3_aug(data)
 
+            should_debug = (
+                debug_gatr
+                and is_main_process()
+                and (
+                    batch_idx < debug_gatr_batches
+                    or (debug_gatr_interval > 0 and batch_idx % debug_gatr_interval == 0)
+                )
+            )
+            if should_debug:
+                all_finite = True
+                all_finite &= tensor_debug_stats('input_raw', input_raw)
+                all_finite &= tensor_debug_stats('input_e3', input_e3)
+                all_finite &= tensor_debug_stats('input_non_e3', input_non_e3)
+                if not all_finite:
+                    raise FloatingPointError('Non-finite GATr input encountered.')
+
             feat_raw = self.encoder(input_raw)
             feat_e3 = self.encoder(input_e3)
             with torch.no_grad():
                 feat_non_e3 = self.encoder(input_non_e3)
 
-            loss = self.symmetric_infonce_batch(
-                feat_raw,
-                feat_e3,
-                feat_non_e3,
-                mode='raw_e3_non_e3') / accumulation_steps
+            if should_debug:
+                all_finite = True
+                all_finite &= tensor_debug_stats('feat_raw', feat_raw)
+                all_finite &= tensor_debug_stats('feat_e3', feat_e3)
+                all_finite &= tensor_debug_stats('feat_non_e3', feat_non_e3)
+                debug_outputs = self.symmetric_infonce_debug(feat_raw, feat_e3, feat_non_e3)
+                for name, value in debug_outputs.items():
+                    if torch.is_tensor(value):
+                        all_finite &= tensor_debug_stats(name, value)
+                if not all_finite:
+                    raise FloatingPointError('Non-finite GATr debug tensor encountered.')
+                loss = debug_outputs['loss'] / accumulation_steps
+                self.log.update_batch(
+                    "log/pretrain/raw_e3_non_e3_infonce_loss",
+                    debug_outputs['loss'].item())
+            else:
+                loss = self.symmetric_infonce_batch(
+                    feat_raw,
+                    feat_e3,
+                    feat_non_e3,
+                    mode='raw_e3_non_e3') / accumulation_steps
+
+            if not torch.isfinite(loss):
+                if is_main_process():
+                    print('[GATr debug] non-finite loss at epoch={} batch={}'.format(epoch, batch_idx))
+                    tensor_debug_stats('loss', loss)
+                    for name, parameter in unwrap_model(self.encoder).named_parameters():
+                        if not torch.isfinite(parameter).all():
+                            tensor_debug_stats('encoder.param.' + name, parameter)
+                            break
+                    for name, parameter in unwrap_model(self.btwins_head).named_parameters():
+                        if not torch.isfinite(parameter).all():
+                            tensor_debug_stats('btwins.param.' + name, parameter)
+                            break
+                raise FloatingPointError('Non-finite GATr pretrain loss encountered.')
 
             loss.backward()
+            if debug_gatr and is_main_process() and batch_idx < debug_gatr_batches:
+                for name, parameter in unwrap_model(self.encoder).named_parameters():
+                    if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
+                        tensor_debug_stats('encoder.grad.' + name, parameter.grad)
+                        raise FloatingPointError('Non-finite GATr encoder gradient encountered.')
+                for name, parameter in unwrap_model(self.btwins_head).named_parameters():
+                    if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
+                        tensor_debug_stats('btwins.grad.' + name, parameter.grad)
+                        raise FloatingPointError('Non-finite GATr projector gradient encountered.')
             if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
                 self.optimizer.step()
                 self.optimizer.zero_grad()

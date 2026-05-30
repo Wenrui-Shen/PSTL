@@ -104,6 +104,35 @@ class BTwins(nn.Module):
         loss_positive = self.infonce_from_embeddings(positive, anchor, negative, temperature)
         return loss_anchor + loss_positive
 
+    def symmetric_infonce_debug(self, feat1, feat2, negative_feat, temperature=0.2):
+        features = torch.cat([feat1, feat2, negative_feat], dim=0)
+        projected = self.projector(features)
+        anchor, positive, negative = projected.chunk(3, dim=0)
+
+        anchor = F.normalize(anchor, dim=1)
+        positive = F.normalize(positive, dim=1)
+        negative = F.normalize(negative.detach(), dim=1)
+
+        anchor_positive_logits = torch.sum(anchor * positive, dim=1, keepdim=True)
+        anchor_negative_logits = torch.sum(anchor * negative, dim=1, keepdim=True)
+        positive_anchor_logits = torch.sum(positive * anchor, dim=1, keepdim=True)
+        positive_negative_logits = torch.sum(positive * negative, dim=1, keepdim=True)
+        anchor_logits = torch.cat([anchor_positive_logits, anchor_negative_logits], dim=1) / temperature
+        positive_logits = torch.cat([positive_anchor_logits, positive_negative_logits], dim=1) / temperature
+        labels = torch.zeros(anchor.shape[0], dtype=torch.long, device=anchor.device)
+        loss = F.cross_entropy(anchor_logits, labels, reduction='mean')
+        loss = loss + F.cross_entropy(positive_logits, labels, reduction='mean')
+        return {
+            'features': features,
+            'projected': projected,
+            'anchor': anchor,
+            'positive': positive,
+            'negative': negative,
+            'anchor_logits': anchor_logits,
+            'positive_logits': positive_logits,
+            'loss': loss,
+        }
+
     def infonce_from_embeddings(self, anchor, positive, negative, temperature):
         positive_logits = torch.sum(anchor * positive, dim=1, keepdim=True)
         negative_logits = torch.sum(anchor * negative, dim=1, keepdim=True)
