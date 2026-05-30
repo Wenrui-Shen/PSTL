@@ -809,7 +809,15 @@ class GATrProcessor(BTProcessor):
         self.btwins_head = wrap_ddp(self.btwins_head)
 
     @ex.capture
-    def train_epoch(self, epoch, pretrain_epoch, pretrain_lr):
+    def train_epoch(
+        self,
+        epoch,
+        pretrain_epoch,
+        pretrain_lr,
+        debug_gatr,
+        debug_gatr_batches,
+        debug_gatr_interval,
+    ):
         self.encoder.train()
         self.btwins_head.train()
 
