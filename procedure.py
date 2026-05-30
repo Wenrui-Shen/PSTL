@@ -884,6 +884,16 @@ class GATrProcessor(BTProcessor):
             if not torch.isfinite(loss):
                 if is_main_process():
                     print('[GATr debug] non-finite loss at epoch={} batch={}'.format(epoch, batch_idx))
+                    tensor_debug_stats('input_raw', input_raw)
+                    tensor_debug_stats('input_e3', input_e3)
+                    tensor_debug_stats('input_non_e3', input_non_e3)
+                    tensor_debug_stats('feat_raw', feat_raw)
+                    tensor_debug_stats('feat_e3', feat_e3)
+                    tensor_debug_stats('feat_non_e3', feat_non_e3)
+                    debug_outputs = self.symmetric_infonce_debug(feat_raw, feat_e3, feat_non_e3)
+                    for name, value in debug_outputs.items():
+                        if torch.is_tensor(value):
+                            tensor_debug_stats(name, value)
                     tensor_debug_stats('loss', loss)
                     for name, parameter in unwrap_model(self.encoder).named_parameters():
                         if not torch.isfinite(parameter).all():
