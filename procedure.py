@@ -115,6 +115,13 @@ def tensor_debug_stats(name, tensor):
         return bool(finite.all().item())
 
 
+def first_nonfinite_named_tensor(named_tensors):
+    for name, tensor in named_tensors:
+        if tensor is not None and not torch.isfinite(tensor).all():
+            return name, tensor
+    return None, None
+
+
 def wrap_ddp(module):
     if not is_distributed():
         return module
@@ -906,17 +913,45 @@ class GATrProcessor(BTProcessor):
                 raise FloatingPointError('Non-finite GATr pretrain loss encountered.')
 
             loss.backward()
-            if debug_gatr and is_main_process() and batch_idx < debug_gatr_batches:
-                for name, parameter in unwrap_model(self.encoder).named_parameters():
-                    if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
-                        tensor_debug_stats('encoder.grad.' + name, parameter.grad)
-                        raise FloatingPointError('Non-finite GATr encoder gradient encountered.')
-                for name, parameter in unwrap_model(self.btwins_head).named_parameters():
-                    if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
-                        tensor_debug_stats('btwins.grad.' + name, parameter.grad)
-                        raise FloatingPointError('Non-finite GATr projector gradient encountered.')
+            if debug_gatr and is_main_process():
+                encoder = unwrap_model(self.encoder)
+                btwins_head = unwrap_model(self.btwins_head)
+                name, grad = first_nonfinite_named_tensor(
+                    (name, parameter.grad)
+                    for name, parameter in encoder.named_parameters()
+                )
+                if grad is not None:
+                    print('[GATr debug] non-finite encoder gradient before step at epoch={} batch={}'.format(epoch, batch_idx))
+                    tensor_debug_stats('encoder.grad.' + name, grad)
+                    parameter = dict(encoder.named_parameters())[name]
+                    tensor_debug_stats('encoder.param.' + name, parameter)
+                    raise FloatingPointError('Non-finite GATr encoder gradient encountered.')
+
+                name, grad = first_nonfinite_named_tensor(
+                    (name, parameter.grad)
+                    for name, parameter in btwins_head.named_parameters()
+                )
+                if grad is not None:
+                    print('[GATr debug] non-finite projector gradient before step at epoch={} batch={}'.format(epoch, batch_idx))
+                    tensor_debug_stats('btwins.grad.' + name, grad)
+                    parameter = dict(btwins_head.named_parameters())[name]
+                    tensor_debug_stats('btwins.param.' + name, parameter)
+                    raise FloatingPointError('Non-finite GATr projector gradient encountered.')
             if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
                 self.optimizer.step()
+                if debug_gatr and is_main_process():
+                    encoder = unwrap_model(self.encoder)
+                    btwins_head = unwrap_model(self.btwins_head)
+                    name, parameter = first_nonfinite_named_tensor(encoder.named_parameters())
+                    if parameter is not None:
+                        print('[GATr debug] non-finite encoder parameter after step at epoch={} batch={}'.format(epoch, batch_idx))
+                        tensor_debug_stats('encoder.param.' + name, parameter)
+                        raise FloatingPointError('Non-finite GATr encoder parameter encountered.')
+                    name, parameter = first_nonfinite_named_tensor(btwins_head.named_parameters())
+                    if parameter is not None:
+                        print('[GATr debug] non-finite projector parameter after step at epoch={} batch={}'.format(epoch, batch_idx))
+                        tensor_debug_stats('btwins.param.' + name, parameter)
+                        raise FloatingPointError('Non-finite GATr projector parameter encountered.')
                 self.optimizer.zero_grad()
 
 
