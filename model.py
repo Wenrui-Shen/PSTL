@@ -109,7 +109,7 @@ class BTwins(nn.Module):
         negative_logits = torch.sum(anchor * negative, dim=1, keepdim=True)
         logits = torch.cat([positive_logits, negative_logits], dim=1) / temperature
         labels = torch.zeros(anchor.shape[0], dtype=torch.long, device=anchor.device)
-        return F.cross_entropy(logits, labels, reduction='sum')
+        return F.cross_entropy(logits, labels, reduction='mean')
 
     def off_diagonal(self, x):
         # return a flattened view of the off-diagonal elements of a square matrix
