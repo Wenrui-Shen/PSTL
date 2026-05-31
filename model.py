@@ -120,8 +120,8 @@ class BTwins(nn.Module):
         anchor_logits = torch.cat([anchor_positive_logits, anchor_negative_logits], dim=1) / temperature
         positive_logits = torch.cat([positive_anchor_logits, positive_negative_logits], dim=1) / temperature
         labels = torch.zeros(anchor.shape[0], dtype=torch.long, device=anchor.device)
-        loss = F.cross_entropy(anchor_logits, labels, reduction='mean')
-        loss = loss + F.cross_entropy(positive_logits, labels, reduction='mean')
+        loss = F.cross_entropy(anchor_logits, labels, reduction='sum')
+        loss = loss + F.cross_entropy(positive_logits, labels, reduction='sum')
         return {
             'features': features,
             'projected': projected,
@@ -138,7 +138,7 @@ class BTwins(nn.Module):
         negative_logits = torch.sum(anchor * negative, dim=1, keepdim=True)
         logits = torch.cat([positive_logits, negative_logits], dim=1) / temperature
         labels = torch.zeros(anchor.shape[0], dtype=torch.long, device=anchor.device)
-        return F.cross_entropy(logits, labels, reduction='mean')
+        return F.cross_entropy(logits, labels, reduction='sum')
 
     def off_diagonal(self, x):
         # return a flattened view of the off-diagonal elements of a square matrix
