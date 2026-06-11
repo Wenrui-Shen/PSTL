@@ -18,9 +18,12 @@ from module.gatr_skeleton import SkeletonGATrEncoder
 
 @ex.capture
 def build_encoder(encoder_type, in_channels, hidden_channels, hidden_dim, dropout,
-                  graph_args, edge_importance_weighting, gatr_hidden_mv_channels,
-                  gatr_hidden_s_channels, gatr_num_blocks, gatr_num_heads,
-                  gatr_temporal_refinement, gatr_dropout, gatr_checkpoint_blocks):
+                  graph_args, edge_importance_weighting, gatr_out_mv_channels,
+                  gatr_in_s_channels, gatr_hidden_mv_channels,
+                  gatr_hidden_s_channels, gatr_out_s_channels,
+                  gatr_num_blocks, gatr_num_heads,
+                  gatr_temporal_refinement, gatr_dropout, gatr_checkpoint_blocks,
+                  max_frame, joint_num, person_num):
     if encoder_type == "stgcn":
         return Model(
             in_channels=in_channels,
@@ -32,16 +35,25 @@ def build_encoder(encoder_type, in_channels, hidden_channels, hidden_dim, dropou
         )
     if encoder_type == "gatr":
         return SkeletonGATrEncoder(
-            hidden_dim=hidden_dim,
+            out_mv_channels=gatr_out_mv_channels,
+            in_s_channels=gatr_in_s_channels,
             hidden_mv_channels=gatr_hidden_mv_channels,
             hidden_s_channels=gatr_hidden_s_channels,
+            out_s_channels=gatr_out_s_channels,
             num_blocks=gatr_num_blocks,
             num_heads=gatr_num_heads,
             temporal_refinement=gatr_temporal_refinement,
+            num_frames=max_frame,
+            num_joints=joint_num,
+            num_people=person_num,
             dropout_prob=gatr_dropout,
             checkpoint_blocks=gatr_checkpoint_blocks,
         )
     raise ValueError("encoder_type must be 'stgcn' or 'gatr', found {}".format(encoder_type))
+
+
+def get_encoder_output_dim(encoder, hidden_size):
+    return getattr(encoder, "output_dim", hidden_size)
 
 
 @ex.capture
@@ -174,10 +186,11 @@ class BaseProcessor:
 class RecognitionProcessor(BaseProcessor):
 
     @ex.capture
-    def load_model(self,train_mode):
+    def load_model(self,train_mode,hidden_size):
         self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
-        self.classifier = Linear().cuda()
+        feature_size = get_encoder_output_dim(self.encoder, hidden_size)
+        self.classifier = Linear(hidden_size=feature_size).cuda()
         self.load_weights(self.encoder, self.weight_path)
     
     @ex.capture
@@ -234,13 +247,13 @@ class RecognitionProcessor(BaseProcessor):
         for data, label in tqdm(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
-            label_list.append(label)
             data = prepare_encoder_input(data)
 
             with torch.no_grad():
                 Z = self.encoder(data)
                 predict = self.classifier(Z)
                 result_list.append(predict)
+                label_list.append(label)
 
             _, pred = torch.max(predict, 1)
             acc = pred.eq(label.view_as(pred)).float().mean()
@@ -270,10 +283,11 @@ class RecognitionProcessor(BaseProcessor):
 class SemiProcessor(BaseProcessor):
 
     @ex.capture
-    def load_model(self,train_mode):
+    def load_model(self,train_mode,hidden_size):
         self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
-        self.classifier = Linear().cuda()
+        feature_size = get_encoder_output_dim(self.encoder, hidden_size)
+        self.classifier = Linear(hidden_size=feature_size).cuda()
         self.load_weights(self.encoder, self.weight_path)
     
     @ex.capture
@@ -329,12 +343,12 @@ class SemiProcessor(BaseProcessor):
         for data, label in tqdm(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
-            label_list.append(label)
             data = prepare_encoder_input(data)
             with torch.no_grad():
                 Z = self.encoder(data)
                 predict = self.classifier(Z)
                 result_list.append(predict)
+                label_list.append(label)
 
             _, pred = torch.max(predict, 1)
             acc = pred.eq(label.view_as(pred)).float().mean()
@@ -359,10 +373,11 @@ class SemiProcessor(BaseProcessor):
 class FTProcessor(BaseProcessor):
 
     @ex.capture
-    def load_model(self,train_mode):
+    def load_model(self,train_mode,hidden_size):
         self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
-        self.classifier = Linear().cuda()
+        feature_size = get_encoder_output_dim(self.encoder, hidden_size)
+        self.classifier = Linear(hidden_size=feature_size).cuda()
         self.load_weights(self.encoder, self.weight_path)
     
     @ex.capture
@@ -417,12 +432,12 @@ class FTProcessor(BaseProcessor):
         for data, label in tqdm(loader):
             data = data.type(torch.FloatTensor).cuda()
             label = label.type(torch.LongTensor).cuda()
-            label_list.append(label)
             data = prepare_encoder_input(data)
             with torch.no_grad():
                 Z = self.encoder(data)
                 predict = self.classifier(Z)
                 result_list.append(predict)
+                label_list.append(label)
 
             _, pred = torch.max(predict, 1)
             acc = pred.eq(label.view_as(pred)).float().mean()
@@ -446,10 +461,14 @@ class FTProcessor(BaseProcessor):
 class BTProcessor(BaseProcessor):
     
     @ex.capture
-    def load_model(self):
+    def load_model(self, hidden_size, encoder_type):
         self.encoder = build_encoder()
         self.encoder = self.encoder.cuda()
-        self.btwins_head = BTwins().cuda()
+        feature_size = get_encoder_output_dim(self.encoder, hidden_size)
+        if encoder_type == "gatr":
+            self.btwins_head = GATrBTwins(hidden_size=feature_size).cuda()
+        else:
+            self.btwins_head = BTwins(hidden_size=feature_size).cuda()
 
     @ex.capture
     def load_optim(self, pretrain_lr, pretrain_epoch, weight_decay, resume_path,
@@ -520,7 +539,9 @@ class BTProcessor(BaseProcessor):
         return BTloss
 
     @ex.capture
-    def train_epoch(self, epoch, pretrain_epoch, pretrain_lr):
+    def train_epoch(self, epoch, pretrain_epoch, pretrain_lr, encoder_type,
+                    gatr_translation_range, gatr_y_rotation_degrees,
+                    gatr_reflection_prob):
         self.encoder.train()
         self.btwins_head.train()
 
@@ -533,35 +554,50 @@ class BTProcessor(BaseProcessor):
             data = data.type(torch.FloatTensor).cuda()
             data = prepare_encoder_input(data)
 
-            # get ignore joint
-            ignore_joint = central_spacial_mask()
+            if encoder_type == "gatr":
+                raw_x = data.clone()
+                equivariant_x = gatr_random_translation(
+                    data,
+                    translation_range=gatr_translation_range,
+                )
+                equivariant_x = gatr_random_y_rotation(
+                    equivariant_x,
+                    y_rotation_degrees=gatr_y_rotation_degrees,
+                )
+                equivariant_x = gatr_random_reflection(
+                    equivariant_x,
+                    reflection_prob=gatr_reflection_prob,
+                )
+                raw_features = self.encoder(raw_x)
+                equivariant_features = self.encoder(equivariant_x)
+                loss = self.btwins_batch(
+                    raw_features,
+                    equivariant_features,
+                    mode="equivariant",
+                )
+            else:
+                # Preserve the original PSTL streams and pretraining tasks for ST-GCN.
+                ignore_joint = central_spacial_mask()
 
-            # input1
-            input1 = shear(crop(data))
-            input1 = random_rotate(input1)
-            input1 = random_spatial_flip(input1)
-            feat1 = self.encoder(input1)
+                input1 = shear(crop(data))
+                input1 = random_rotate(input1)
+                input1 = random_spatial_flip(input1)
+                feat1 = self.encoder(input1)
 
-            # input2
-            input2 = shear(crop(data))
-            input2 = random_rotate(input2)
-            input2 = random_spatial_flip(input2)
-            # MATM
-            input2 = motion_att_temp_mask(input2)
-            feat2 = self.encoder(input2)
+                input2 = shear(crop(data))
+                input2 = random_rotate(input2)
+                input2 = random_spatial_flip(input2)
+                input2 = motion_att_temp_mask(input2)
+                feat2 = self.encoder(input2)
 
-            # input3
-            input3 = shear(crop(data))
-            input3 = random_rotate(input3)
-            input3 = random_spatial_flip(input3)
-            # CSM
-            feat3 = self.encoder(input3, ignore_joint)
+                input3 = shear(crop(data))
+                input3 = random_rotate(input3)
+                input3 = random_spatial_flip(input3)
+                feat3 = self.encoder(input3, ignore_joint)
 
-            # loss
-            loss_bt1 = self.btwins_batch(feat1, feat2, mode='temp_mask')
-            loss_bt2 = self.btwins_batch(feat1, feat3, mode='joint_mask')
-
-            loss = loss_bt1 + loss_bt2
+                loss_bt1 = self.btwins_batch(feat1, feat2, mode='temp_mask')
+                loss_bt2 = self.btwins_batch(feat1, feat3, mode='joint_mask')
+                loss = loss_bt1 + loss_bt2
 
             self.optimizer.zero_grad()
             loss.backward()

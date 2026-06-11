@@ -41,14 +41,14 @@ NTU_BONE_PAIRS: Tuple[Tuple[int, int], ...] = (
 class SkeletonPGAInput(nn.Module):
     """Convert PSTL skeleton tensors into GATr multivector inputs.
 
-    Input tensors have shape ``(N, 3, T, V, M)``. Person instances are folded into the batch
+    Input tensors have shape ``(N, 3, T, V, M)``. Person instances are folded into the token
     dimension, joint coordinates are embedded as PGA points, and motion and bone displacements are
     embedded as PGA translators. Two feature streams are formed:
 
     ``joint point + motion translator`` and ``joint point + bone translator``.
 
-    Consecutive frames are then folded into the multivector-channel dimension. With the default
-    refinement factor of two, the output shape is ``(N*M, T/2*V, 4, 16)``.
+    Consecutive frames are then folded into the multivector-channel dimension. With refinement
+    factor ``R``, the output shape is ``(N, T/R*V*M, 2*R, 16)``.
     """
 
     def __init__(
@@ -86,12 +86,13 @@ class SkeletonPGAInput(nn.Module):
         Returns
         -------
         multivectors : torch.Tensor with shape
-            (N*M, T/temporal_refinement*V, 2*temporal_refinement, 16)
+            (N, T/temporal_refinement*V*M, 2*temporal_refinement, 16)
         """
         batch_size, _, num_frames, num_joints, num_people = self._validate_input(skeleton)
         multivectors = self.embed_skeleton(skeleton, ignore_joint)
         multivectors = multivectors.view(
-            batch_size * num_people,
+            batch_size,
+            num_people,
             num_frames,
             num_joints,
             2,
@@ -100,18 +101,19 @@ class SkeletonPGAInput(nn.Module):
 
         refined_frames = num_frames // self.temporal_refinement
         multivectors = multivectors.view(
-            batch_size * num_people,
+            batch_size,
+            num_people,
             refined_frames,
             self.temporal_refinement,
             num_joints,
             2,
             16,
         )
-        # Fold each group of consecutive frames into the MV-channel dimension.
-        multivectors = multivectors.permute(0, 1, 3, 2, 4, 5).contiguous()
+        # People become tokens; consecutive frames become MV channels.
+        multivectors = multivectors.permute(0, 2, 4, 1, 3, 5, 6).contiguous()
         multivectors = multivectors.view(
-            batch_size * num_people,
-            refined_frames * num_joints,
+            batch_size,
+            refined_frames * num_joints * num_people,
             self.temporal_refinement * 2,
             16,
         )
@@ -208,23 +210,41 @@ class SkeletonGATrEncoder(nn.Module):
 
     def __init__(
         self,
-        hidden_dim: int = 256,
+        out_mv_channels: int = 1,
+        in_s_channels: int = 1,
         hidden_mv_channels: int = 8,
-        hidden_s_channels: int = 64,
+        hidden_s_channels: int = 1,
+        out_s_channels: int = 1,
         num_blocks: int = 6,
         num_heads: int = 4,
         temporal_refinement: int = 2,
+        num_frames: int = 50,
+        num_joints: int = 25,
+        num_people: int = 2,
         dropout_prob: Optional[float] = None,
         checkpoint_blocks: bool = True,
     ) -> None:
         super().__init__()
+        if out_mv_channels < 1:
+            raise ValueError("out_mv_channels must be at least 1")
+        if out_mv_channels != 1:
+            raise ValueError("Flattened MV output currently requires out_mv_channels=1")
+        if in_s_channels < 1 or hidden_s_channels < 1 or out_s_channels < 1:
+            raise ValueError("Scalar channel counts must be at least 1")
+        if num_frames % temporal_refinement != 0:
+            raise ValueError("num_frames must be divisible by temporal_refinement")
+
+        self.in_s_channels = in_s_channels
+        self.output_dim = (
+            num_frames // temporal_refinement * num_joints * num_people * 16
+        )
         self.input_adapter = SkeletonPGAInput(temporal_refinement=temporal_refinement)
         self.gatr = GATr(
             in_mv_channels=2 * temporal_refinement,
-            out_mv_channels=1,
+            out_mv_channels=out_mv_channels,
             hidden_mv_channels=hidden_mv_channels,
-            in_s_channels=1,
-            out_s_channels=hidden_dim,
+            in_s_channels=in_s_channels,
+            out_s_channels=out_s_channels,
             hidden_s_channels=hidden_s_channels,
             attention=SelfAttentionConfig(
                 num_heads=num_heads,
@@ -242,22 +262,22 @@ class SkeletonGATrEncoder(nn.Module):
         skeleton: torch.Tensor,
         ignore_joint: Optional[Iterable[int]] = None,
     ) -> torch.Tensor:
-        """Encode ``(N, 3, T, V, M)`` skeletons as ``(N, hidden_dim)`` features."""
-        batch_size, _, _, _, num_people = skeleton.shape
+        """Encode skeletons into one flattened multivector feature per action."""
         multivectors = self.input_adapter(skeleton, ignore_joint=ignore_joint)
         scalars = torch.zeros(
             *multivectors.shape[:-2],
-            1,
+            self.in_s_channels,
             device=multivectors.device,
             dtype=multivectors.dtype,
         )
 
-        _, scalar_outputs = self.gatr(multivectors, scalars=scalars)
-        if scalar_outputs is None:
-            raise RuntimeError("SkeletonGATrEncoder requires scalar outputs from GATr")
-
-        features = scalar_outputs.mean(dim=1)
-        features = features.view(batch_size, num_people, -1).mean(dim=1)
+        multivector_outputs, _ = self.gatr(multivectors, scalars=scalars)
+        features = multivector_outputs.squeeze(-2).flatten(start_dim=1)
+        if features.shape[1] != self.output_dim:
+            raise RuntimeError(
+                f"Expected flattened MV feature size {self.output_dim}, "
+                f"found {features.shape[1]}"
+            )
         return features
 
 

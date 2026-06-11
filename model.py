@@ -81,6 +81,40 @@ class BTwins(nn.Module):
         n, m = x.shape
         assert n == m
         return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+
+
+class GATrBTwins(nn.Module):
+
+    @ex.capture
+    def __init__(self, hidden_size, lambd, gatr_pj_size):
+        super().__init__()
+        self.projector = nn.Sequential(
+            nn.Linear(hidden_size, gatr_pj_size, bias=False),
+            nn.BatchNorm1d(gatr_pj_size),
+            nn.ReLU(True),
+            nn.Linear(gatr_pj_size, gatr_pj_size, bias=False),
+            nn.BatchNorm1d(gatr_pj_size),
+            nn.ReLU(True),
+            nn.Linear(gatr_pj_size, gatr_pj_size, bias=False),
+        )
+        self.bn = nn.BatchNorm1d(gatr_pj_size, affine=False)
+        self.lambd = lambd
+
+    def forward(self, feat1, feat2):
+        feat1 = self.bn(self.projector(feat1))
+        feat2 = self.bn(self.projector(feat2))
+
+        batch_size = feat1.shape[0]
+        correlation = (feat1.T @ feat2).div_(batch_size)
+        on_diag = torch.diagonal(correlation).add_(-1).pow_(2).sum()
+        off_diag = self.off_diagonal(correlation).pow_(2).sum()
+        return on_diag + self.lambd * off_diag
+
+    @staticmethod
+    def off_diagonal(x):
+        n, m = x.shape
+        assert n == m
+        return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
     
 @ex.capture 
 def get_stream(data, view):
@@ -193,6 +227,64 @@ def random_rotate(data):
             new_seq = rotate(new_seq, axis, rotate_angle)
 
     return new_seq
+
+
+def gatr_random_translation(data, translation_range=0.5):
+    """Translate each skeleton sequence without changing zero padding."""
+    if data.ndim != 5 or data.shape[1] != 3:
+        raise ValueError(
+            "Skeleton input must have shape (N, 3, T, V, M), "
+            f"found {tuple(data.shape)}"
+        )
+    if translation_range < 0:
+        raise ValueError("translation_range must be non-negative")
+
+    output = data.clone()
+    batch_size = data.shape[0]
+    translation = torch.empty(
+        batch_size, 3, device=data.device, dtype=data.dtype
+    ).uniform_(-translation_range, translation_range)
+    valid_person_frames = data.abs().sum(dim=(1, 3), keepdim=True).ne(0)
+    return output + translation[:, :, None, None, None] * valid_person_frames
+
+
+def gatr_random_y_rotation(data, y_rotation_degrees=30.0):
+    """Rotate each skeleton sequence around the body y axis."""
+    if y_rotation_degrees < 0:
+        raise ValueError("y_rotation_degrees must be non-negative")
+
+    batch_size = data.shape[0]
+    angles = torch.empty(
+        batch_size, device=data.device, dtype=data.dtype
+    ).uniform_(-y_rotation_degrees, y_rotation_degrees)
+    angles = angles * (math.pi / 180.0)
+    cosine = torch.cos(angles)
+    sine = torch.sin(angles)
+
+    rotation = torch.zeros(
+        batch_size, 3, 3, device=data.device, dtype=data.dtype
+    )
+    rotation[:, 0, 0] = cosine
+    rotation[:, 0, 2] = -sine
+    rotation[:, 1, 1] = 1.0
+    rotation[:, 2, 0] = sine
+    rotation[:, 2, 2] = cosine
+    return torch.einsum("nij,njtvp->nitvp", rotation, data)
+
+
+def gatr_random_reflection(data, reflection_prob=0.5):
+    """Reflect each skeleton sequence across the yz plane."""
+    if not 0.0 <= reflection_prob <= 1.0:
+        raise ValueError("reflection_prob must be in [0, 1]")
+
+    batch_size = data.shape[0]
+    reflected = torch.rand(batch_size, device=data.device) < reflection_prob
+    reflection = torch.ones(
+        batch_size, 3, device=data.device, dtype=data.dtype
+    )
+    reflection[reflected, 0] = -1.0
+    return data * reflection[:, :, None, None, None]
+
 
 @ex.capture
 def get_ignore_joint(mask_joint):
