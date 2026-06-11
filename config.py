@@ -34,13 +34,13 @@ def my_config():
     }
     edge_importance_weighting = True
     ################################ GATr ################################
-    gatr_hidden_mv_channels = 8
-    gatr_hidden_s_channels = 64
+    gatr_hidden_mv_channels = 32
+    gatr_hidden_s_channels = 4
     gatr_num_blocks = 1
     gatr_num_heads = 8
     gatr_temporal_refinement = 2
-    gatr_dropout = None
-    gatr_checkpoint_blocks = True
+    gatr_dropout = 0.5
+    gatr_checkpoint_blocks = False
     ############################ down stream ############################
     # Set these overrides to a path to bypass the encoder-specific defaults below.
     weight_path = None

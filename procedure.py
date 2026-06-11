@@ -492,10 +492,13 @@ class BTProcessor(BaseProcessor):
             torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
         if "numpy_rng_state" in checkpoint:
             numpy_rng_state = checkpoint["numpy_rng_state"]
+            numpy_state = numpy_rng_state["state"]
+            if torch.is_tensor(numpy_state):
+                numpy_state = numpy_state.cpu().numpy()
             np.random.set_state(
                 (
                     numpy_rng_state["bit_generator"],
-                    numpy_rng_state["state"].cpu().numpy(),
+                    np.asarray(numpy_state, dtype=np.uint32),
                     numpy_rng_state["position"],
                     numpy_rng_state["has_gauss"],
                     numpy_rng_state["cached_gaussian"],
@@ -586,7 +589,9 @@ class BTProcessor(BaseProcessor):
                 ),
                 "numpy_rng_state": {
                     "bit_generator": numpy_rng_state[0],
-                    "state": torch.from_numpy(numpy_rng_state[1].copy()),
+                    # PyTorch does not support tensors backed by NumPy uint32 arrays.
+                    # MT19937 values fit exactly in int64 and are cast back on restore.
+                    "state": torch.from_numpy(numpy_rng_state[1].astype(np.int64)),
                     "position": numpy_rng_state[2],
                     "has_gauss": numpy_rng_state[3],
                     "cached_gaussian": numpy_rng_state[4],
