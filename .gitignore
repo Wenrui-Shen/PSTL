@@ -1,2 +1,4 @@
 /geometric-algebra-transformer
-/__pycache__
+__pycache__/
+*.py[cod]
+*:Zone.Identifier

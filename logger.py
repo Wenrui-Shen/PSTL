@@ -2,7 +2,7 @@ import numpy as np
 import logging
 from config import *
 
-def get_logger(filename, verbosity=1, name=None):
+def get_logger(filename, verbosity=1, name=None, append=False):
     level_dict = {0: logging.DEBUG, 1: logging.INFO, 2: logging.WARNING}
     formatter = logging.Formatter(
         "[%(asctime)s][%(levelname)s] %(message)s"
@@ -10,7 +10,7 @@ def get_logger(filename, verbosity=1, name=None):
     logger = logging.getLogger(name)
     logger.setLevel(level_dict[verbosity])
 
-    fh = logging.FileHandler(filename, "w")
+    fh = logging.FileHandler(filename, "a" if append else "w")
     fh.setFormatter(formatter)
     logger.addHandler(fh)
 
@@ -22,11 +22,11 @@ def get_logger(filename, verbosity=1, name=None):
 
 class Log:
     @ex.capture
-    def __init__(self, log_path) -> None:
+    def __init__(self, log_path, append=False) -> None:
         self.batch_data = dict()
         self.epoch_data = dict()
         self.max_data = {'best_epoch':-1, 'test_acc':-1}
-        self.logger = get_logger(log_path)
+        self.logger = get_logger(log_path, append=append)
         self.logger.info('Start')
 
     def update_batch(self, name, value):

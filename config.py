@@ -22,6 +22,7 @@ def my_config():
     label_percent = 0.1
     weight_decay = 1e-5
     hidden_size = 256
+    encoder_type = "stgcn"  # stgcn / gatr
     ############################## ST-GCN ###############################
     in_channels = 3
     hidden_channels = 16
@@ -32,17 +33,39 @@ def my_config():
     "strategy" : 'spatial'
     }
     edge_importance_weighting = True
+    ################################ GATr ################################
+    gatr_hidden_mv_channels = 8
+    gatr_hidden_s_channels = 64
+    gatr_num_blocks = 1
+    gatr_num_heads = 8
+    gatr_temporal_refinement = 2
+    gatr_dropout = None
+    gatr_checkpoint_blocks = True
     ############################ down stream ############################
-    weight_path = './output/weight/v'+version+'_epoch_150_pretrain.pt' ## your weight path
+    # Set these overrides to a path to bypass the encoder-specific defaults below.
+    weight_path = None
+    log_path = None
+    result_path = None
+    resume_path = None
+    checkpoint_interval = 10
+    stgcn_weight_path = (
+        './output/weight/v'+version+'_epoch_'+str(pretrain_epoch)+'_pretrain.pt'
+    )
+    gatr_weight_path = (
+        './output/weight/v'+version+'_gatr_epoch_'+str(pretrain_epoch)+'_pretrain.pt'
+    )
     train_mode = 'pretrain'  # lp / finetune / semi
-    log_path = './output/log/v'+version+'_'+train_mode+'.log'
-    result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_'
+    stgcn_log_path = './output/log/v'+version+'_'+train_mode+'.log'
+    gatr_log_path = './output/log/v'+version+'_gatr_'+train_mode+'.log'
+    stgcn_result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_'
+    gatr_result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_gatr_'
     label_path = './result/'+dataset+'/'+split+'/label/label.pkl'
     ################################ GPU ################################
     # gpus = "0"
     # os.environ['CUDA_VISIBLE_DEVICES'] = gpus
     ########################## Skeleton Setting #########################
     batch_size = 128
+    gatr_batch_size = 128
     channel_num = 3
     person_num = 2
     joint_num = 25

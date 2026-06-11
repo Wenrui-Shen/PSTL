@@ -232,6 +232,66 @@ def embed_scalar(scalars: torch.Tensor) -> torch.Tensor:
     return embedding
 
 
+def embed_point(coordinates: torch.Tensor) -> torch.Tensor:
+    """Embed 3D points as PGA trivectors.
+
+    Parameters
+    ----------
+    coordinates : torch.Tensor with shape (..., 3)
+        Cartesian point coordinates.
+
+    Returns
+    -------
+    multivector : torch.Tensor with shape (..., 16)
+        Point embedding in the PGA basis used by GATr.
+    """
+    if coordinates.shape[-1] != 3:
+        raise ValueError(
+            f"Point coordinates must have three components, found shape {coordinates.shape}"
+        )
+
+    batch_shape = coordinates.shape[:-1]
+    multivector = torch.zeros(
+        *batch_shape, 16, dtype=coordinates.dtype, device=coordinates.device
+    )
+    multivector[..., 14] = 1.0
+    multivector[..., 13] = -coordinates[..., 0]
+    multivector[..., 12] = coordinates[..., 1]
+    multivector[..., 11] = -coordinates[..., 2]
+    return multivector
+
+
+def embed_translation(translation_vector: torch.Tensor) -> torch.Tensor:
+    """Embed a 3D displacement as a PGA translator.
+
+    The result contains the scalar component and the ideal bivector components from
+    ``T(t) = 1 - 0.5 * e0 * t``.
+
+    Parameters
+    ----------
+    translation_vector : torch.Tensor with shape (..., 3)
+        Translation or displacement vectors.
+
+    Returns
+    -------
+    multivector : torch.Tensor with shape (..., 16)
+        Translator embedding in the PGA basis used by GATr.
+    """
+    if translation_vector.shape[-1] != 3:
+        raise ValueError(
+            "Translation vectors must have three components, "
+            f"found shape {translation_vector.shape}"
+        )
+
+    batch_shape = translation_vector.shape[:-1]
+    multivector = torch.zeros(
+        *batch_shape, 16, dtype=translation_vector.dtype, device=translation_vector.device
+    )
+    multivector[..., 0] = 1.0
+    multivector[..., 5:8] = -0.5 * translation_vector
+    return multivector
+
+
 # Copyright (c) 2024 Qualcomm Technologies, Inc.
 # All rights reserved.
 
@@ -3488,4 +3548,6 @@ __all__ = [
     "EquiLinear",
     "SelfAttention",
     "GeoMLP",
+    "embed_point",
+    "embed_translation",
 ]
