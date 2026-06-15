@@ -100,21 +100,50 @@ class GATrBTwins(nn.Module):
         self.bn = nn.BatchNorm1d(gatr_pj_size, affine=False)
         self.lambd = lambd
 
-    def forward(self, feat1, feat2):
-        feat1 = self.bn(self.projector(feat1))
-        feat2 = self.bn(self.projector(feat2))
+    def project(self, features):
+        return self.bn(self.projector(features))
 
+    def loss_from_projected(self, feat1, feat2):
         batch_size = feat1.shape[0]
         correlation = (feat1.T @ feat2).div_(batch_size)
         on_diag = torch.diagonal(correlation).add_(-1).pow_(2).sum()
         off_diag = self.off_diagonal(correlation).pow_(2).sum()
         return on_diag + self.lambd * off_diag
 
+    def forward(self, feat1, feat2):
+        return self.loss_from_projected(
+            self.project(feat1),
+            self.project(feat2),
+        )
+
     @staticmethod
     def off_diagonal(x):
         n, m = x.shape
         assert n == m
         return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+
+
+class GATrBoundaryHead(nn.Module):
+
+    @ex.capture
+    def __init__(
+        self,
+        hidden_size,
+        gatr_boundary_hidden_size,
+        gatr_boundary_size,
+    ):
+        super().__init__()
+        self.projector = nn.Sequential(
+            nn.Linear(hidden_size, gatr_boundary_hidden_size, bias=False),
+            nn.LayerNorm(gatr_boundary_hidden_size),
+            nn.ReLU(True),
+            nn.Linear(gatr_boundary_hidden_size, gatr_boundary_size, bias=False),
+        )
+
+    def forward(self, features):
+        projected = self.projector(features)
+        normalized = F.normalize(projected, dim=-1)
+        return projected, normalized
     
 @ex.capture 
 def get_stream(data, view):
@@ -284,6 +313,144 @@ def gatr_random_reflection(data, reflection_prob=0.5):
     )
     reflection[reflected, 0] = -1.0
     return data * reflection[:, :, None, None, None]
+
+
+def _gatr_temporal_gaussian_blur(data, kernel_size, sigma):
+    if kernel_size < 1 or kernel_size % 2 == 0:
+        raise ValueError("Gaussian blur kernel size must be a positive odd number")
+    if sigma <= 0:
+        raise ValueError("Gaussian blur sigma must be positive")
+
+    radius = kernel_size // 2
+    positions = torch.arange(
+        -radius,
+        radius + 1,
+        device=data.device,
+        dtype=data.dtype,
+    )
+    kernel = torch.exp(-(positions ** 2) / (2.0 * sigma ** 2))
+    kernel = (kernel / kernel.sum()).view(1, 1, kernel_size)
+
+    batch_size, channels, frames, joints, people = data.shape
+    sequences = data.permute(0, 1, 3, 4, 2).reshape(-1, 1, frames)
+    blurred = F.conv1d(sequences, kernel, padding=radius)
+    return blurred.reshape(
+        batch_size, channels, joints, people, frames
+    ).permute(0, 1, 4, 2, 3)
+
+
+def _gatr_random_shear(data, amplitude):
+    if amplitude < 0:
+        raise ValueError("Shear amplitude must be non-negative")
+
+    batch_size = data.shape[0]
+    shear = torch.eye(3, device=data.device, dtype=data.dtype)
+    shear = shear.unsqueeze(0).repeat(batch_size, 1, 1)
+    random_values = torch.empty(
+        batch_size, 3, 3, device=data.device, dtype=data.dtype
+    ).uniform_(-amplitude, amplitude)
+    off_diagonal = ~torch.eye(3, device=data.device, dtype=torch.bool)
+    shear[:, off_diagonal] = random_values[:, off_diagonal]
+    return torch.einsum("nij,njtvp->nitvp", shear, data)
+
+
+def gatr_non_equivariant_augmentation(
+    data,
+    shear_prob=0.8,
+    shear_amplitude=0.2,
+    noise_prob=0.8,
+    noise_std=0.02,
+    blur_prob=0.5,
+    blur_kernel=15,
+    blur_sigma_min=0.1,
+    blur_sigma_max=2.0,
+    axis_mask_prob=0.3,
+):
+    """Apply mild non-equivariant corruptions adapted from feeder/ntu_feeder.py."""
+    if data.ndim != 5 or data.shape[1] != 3:
+        raise ValueError(
+            "Skeleton input must have shape (N, 3, T, V, M), "
+            f"found {tuple(data.shape)}"
+        )
+    for name, probability in (
+        ("shear_prob", shear_prob),
+        ("noise_prob", noise_prob),
+        ("blur_prob", blur_prob),
+        ("axis_mask_prob", axis_mask_prob),
+    ):
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1]")
+    if noise_std < 0:
+        raise ValueError("noise_std must be non-negative")
+    if shear_amplitude < 0:
+        raise ValueError("shear_amplitude must be non-negative")
+    if blur_sigma_min <= 0 or blur_sigma_max < blur_sigma_min:
+        raise ValueError("Invalid Gaussian blur sigma range")
+
+    output = data.clone()
+    batch_size = data.shape[0]
+    valid_positions = data.abs().sum(dim=1, keepdim=True).ne(0)
+    applied = torch.zeros(batch_size, device=data.device, dtype=torch.bool)
+
+    shear_mask = torch.rand(batch_size, device=data.device) < shear_prob
+    if shear_mask.any() and shear_amplitude > 0:
+        sheared = _gatr_random_shear(output, shear_amplitude)
+        output = torch.where(
+            shear_mask[:, None, None, None, None],
+            sheared,
+            output,
+        )
+        applied |= shear_mask
+
+    noise_mask = torch.rand(batch_size, device=data.device) < noise_prob
+    if noise_mask.any() and noise_std > 0:
+        noise = torch.randn_like(output) * noise_std
+        output = output + (
+            noise
+            * noise_mask[:, None, None, None, None]
+            * valid_positions
+        )
+        applied |= noise_mask
+
+    blur_mask = torch.rand(batch_size, device=data.device) < blur_prob
+    if blur_mask.any():
+        sigma = torch.empty((), device=data.device).uniform_(
+            blur_sigma_min, blur_sigma_max
+        ).item()
+        blurred = _gatr_temporal_gaussian_blur(output, blur_kernel, sigma)
+        output = torch.where(
+            blur_mask[:, None, None, None, None],
+            blurred,
+            output,
+        )
+        output = output * valid_positions
+        applied |= blur_mask
+
+    axis_mask = torch.rand(batch_size, device=data.device) < axis_mask_prob
+    if axis_mask.any():
+        axes = torch.randint(0, 3, (batch_size,), device=data.device)
+        keep = torch.ones(
+            batch_size, 3, device=data.device, dtype=data.dtype
+        )
+        keep[axis_mask, axes[axis_mask]] = 0.0
+        output = output * keep[:, :, None, None, None]
+        applied |= axis_mask
+
+    # Every sample must include at least one corruption. A small shear is the
+    # fallback when all independently sampled corruptions were skipped.
+    fallback = ~applied
+    if fallback.any():
+        fallback_amplitude = (
+            shear_amplitude if shear_amplitude > 0 else 0.05
+        )
+        sheared = _gatr_random_shear(output, fallback_amplitude)
+        output = torch.where(
+            fallback[:, None, None, None, None],
+            sheared,
+            output,
+        )
+
+    return output * valid_positions
 
 
 @ex.capture
