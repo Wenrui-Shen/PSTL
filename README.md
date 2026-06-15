@@ -35,10 +35,10 @@ You can change some settings of [config.py](https://github.com/YujieOuO/PSTL/blo
 
 ```bash
 # pre-training
-$ env -u LD_LIBRARY_PATH CUDA_VISIBLE_DEVICES=1 python procedure.py with 'train_mode="pretrain"'
+$ env -u LD_LIBRARY_PATH CUDA_VISIBLE_DEVICES=1 python procedure.py with 'train_mode="pretrain"' 'encoder_type="gatr"'
 
 # linear evaluation
-$ env -u LD_LIBRARY_PATH CUDA_VISIBLE_DEVICES=1 python procedure.py with 'train_mode="lp"'
+$ env -u LD_LIBRARY_PATH CUDA_VISIBLE_DEVICES=1 python procedure.py with 'train_mode="lp"' 'encoder_type="gatr"'
 ```
 
 ## Reference
