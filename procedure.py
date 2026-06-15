@@ -574,8 +574,12 @@ class BTProcessor(BaseProcessor):
         non_equivariant_features,
         gatr_boundary_beta,
         gatr_boundary_margin,
+        gatr_boundary_width,
         gatr_boundary_variance_gamma,
     ):
+        if gatr_boundary_width < 0:
+            raise ValueError("gatr_boundary_width must be non-negative")
+
         projected_equivariant = []
         normalized_equivariant = []
         for features in equivariant_features:
@@ -604,13 +608,26 @@ class BTProcessor(BaseProcessor):
         non_equivariant_distance = 1.0 - (
             normalized_non_equivariant * center.detach()
         ).sum(dim=-1)
-        target_distance = (
+        lower_boundary = (
             radius.detach() + gatr_boundary_margin
         ).clamp(max=2.0)
-        boundary_loss = F.smooth_l1_loss(
-            non_equivariant_distance,
-            target_distance,
+        upper_boundary = (
+            lower_boundary + gatr_boundary_width
+        ).clamp(max=2.0)
+
+        lower_violation = F.relu(
+            lower_boundary - non_equivariant_distance
         )
+        upper_violation = F.relu(
+            non_equivariant_distance - upper_boundary
+        )
+        boundary_loss = (
+            lower_violation.square() + upper_violation.square()
+        ).mean()
+        boundary_hit_rate = (
+            (non_equivariant_distance >= lower_boundary)
+            & (non_equivariant_distance <= upper_boundary)
+        ).float().mean()
 
         flat_equivariant = projected_equivariant.flatten(0, 1)
         feature_std = torch.sqrt(
@@ -635,6 +652,18 @@ class BTProcessor(BaseProcessor):
         self.log.update_batch(
             "log/pretrain/non_equivariant_distance",
             non_equivariant_distance.mean().item(),
+        )
+        self.log.update_batch(
+            "log/pretrain/boundary_lower",
+            lower_boundary.mean().item(),
+        )
+        self.log.update_batch(
+            "log/pretrain/boundary_upper",
+            upper_boundary.mean().item(),
+        )
+        self.log.update_batch(
+            "log/pretrain/boundary_hit_rate",
+            boundary_hit_rate.item(),
         )
         return boundary_loss, variance_loss
 
