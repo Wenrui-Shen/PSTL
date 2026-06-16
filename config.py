@@ -44,31 +44,10 @@ def my_config():
     gatr_temporal_refinement = 5
     gatr_dropout = 0.5
     gatr_checkpoint_blocks = False
-    gatr_translation_range = 0.5
-    gatr_y_rotation_degrees = 30.0
-    gatr_reflection_prob = 0.5
-    gatr_pj_size = 4096
-    gatr_num_equivariant_views = 3
-    gatr_boundary_hidden_size = 2048
-    gatr_boundary_size = 512
-    gatr_boundary_beta = 1.0
-    gatr_boundary_margin = 0.05
-    gatr_boundary_width = 0.10
-    gatr_boundary_loss_weight = 50.0
-    gatr_boundary_variance_weight = 1.0
-    gatr_boundary_variance_gamma = 1.0
-    gatr_non_eq_shear_prob = 0.8
-    gatr_non_eq_shear_amplitude = 0.2
-    gatr_non_eq_noise_prob = 0.8
-    gatr_non_eq_noise_std = 0.02
-    gatr_non_eq_blur_prob = 0.5
-    gatr_non_eq_blur_kernel = 15
-    gatr_non_eq_blur_sigma_min = 0.1
-    gatr_non_eq_blur_sigma_max = 2.0
-    gatr_non_eq_axis_mask_prob = 0.2
     ############################ down stream ############################
     # Set these overrides to a path to bypass the encoder-specific defaults below.
     weight_path = None
+    checkpoint_path = None
     log_path = None
     result_path = None
     resume_path = None
@@ -78,6 +57,12 @@ def my_config():
     )
     gatr_weight_path = (
         './output/weight/v'+version+'_gatr_epoch_'+str(pretrain_epoch)+'_pretrain.pt'
+    )
+    stgcn_checkpoint_path = (
+        './output/checkpoint/v'+version+'_epoch_'+str(pretrain_epoch)+'_pretrain_checkpoint.pt'
+    )
+    gatr_checkpoint_path = (
+        './output/checkpoint/v'+version+'_gatr_epoch_'+str(pretrain_epoch)+'_pretrain_checkpoint.pt'
     )
     train_mode = 'pretrain'  # lp / finetune / semi
     stgcn_log_path = './output/log/v'+version+'_'+train_mode+'.log'
@@ -90,7 +75,7 @@ def my_config():
     # os.environ['CUDA_VISIBLE_DEVICES'] = gpus
     ########################## Skeleton Setting #########################
     batch_size = 128
-    # GATr pretraining uses three equivariant views and one non-equivariant view.
+    # GATr pretraining uses two equivariant views and one non-equivariant view.
     gatr_batch_size = 64
     channel_num = 3
     person_num = 2
@@ -106,6 +91,27 @@ def my_config():
     shear_amp = 1
     mask_joint = 8
     mask_frame = 10
+    gatr_translation_range = 0.5
+    gatr_y_rotation_degrees = 30.0
+    gatr_reflection_prob = 0.5
+    gatr_non_eq_shear_prob = 0.8
+    gatr_non_eq_shear_amplitude = 0.2
+    gatr_non_eq_noise_prob = 0.8
+    gatr_non_eq_noise_std = 0.02
+    gatr_non_eq_blur_prob = 0.5
+    gatr_non_eq_blur_kernel = 15
+    gatr_non_eq_blur_sigma_min = 0.1
+    gatr_non_eq_blur_sigma_max = 2.0
+    gatr_non_eq_axis_mask_prob = 0.2
     ############################ Barlow Twins #############################
     pj_size = 6144
     lambd = 2e-4
+    ########################### Contrastive Loss ########################
+    gatr_pj_size = 4096
+    gatr_num_equivariant_views = 2
+    gatr_contrastive_hidden_size = 2048
+    gatr_contrastive_size = 512
+    gatr_contrastive_temperature = 0.2
+    gatr_contrastive_loss_weight = 1.0
+    gatr_noneq_variance_gamma = 1.0
+    gatr_noneq_variance_loss_weight = 1.0

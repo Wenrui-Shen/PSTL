@@ -87,6 +87,22 @@ def resolve_weight_path(
 
 
 @ex.capture
+def resolve_checkpoint_path(
+    encoder_type,
+    checkpoint_path,
+    stgcn_checkpoint_path,
+    gatr_checkpoint_path,
+):
+    return select_encoder_config(
+        encoder_type,
+        checkpoint_path,
+        stgcn_checkpoint_path,
+        gatr_checkpoint_path,
+        "checkpoint_path",
+    )
+
+
+@ex.capture
 def resolve_log_path(encoder_type, log_path, stgcn_log_path, gatr_log_path):
     return select_encoder_config(
         encoder_type, log_path, stgcn_log_path, gatr_log_path, "log_path"
@@ -149,6 +165,7 @@ class BaseProcessor:
     @ex.capture
     def initialize(self, train_mode, resume_path):
         self.weight_path = resolve_weight_path()
+        self.checkpoint_path = resolve_checkpoint_path()
         self.log_path = resolve_log_path()
         self.result_path = resolve_result_path()
         self.load_data()
@@ -467,10 +484,12 @@ class BTProcessor(BaseProcessor):
         feature_size = get_encoder_output_dim(self.encoder, hidden_size)
         if encoder_type == "gatr":
             self.btwins_head = GATrBTwins(hidden_size=feature_size).cuda()
-            self.boundary_head = GATrBoundaryHead(hidden_size=feature_size).cuda()
+            self.contrastive_head = GATrContrastiveHead(
+                hidden_size=feature_size
+            ).cuda()
         else:
             self.btwins_head = BTwins(hidden_size=feature_size).cuda()
-            self.boundary_head = None
+            self.contrastive_head = None
 
     @ex.capture
     def load_optim(self, pretrain_lr, pretrain_epoch, weight_decay, resume_path,
@@ -479,8 +498,8 @@ class BTProcessor(BaseProcessor):
             {'params': self.encoder.parameters()},
             {'params': self.btwins_head.parameters()},
         ]
-        if self.boundary_head is not None:
-            parameter_groups.append({'params': self.boundary_head.parameters()})
+        if self.contrastive_head is not None:
+            parameter_groups.append({'params': self.contrastive_head.parameters()})
         self.optimizer = torch.optim.Adam(
             parameter_groups,
             weight_decay=weight_decay,
@@ -493,8 +512,6 @@ class BTProcessor(BaseProcessor):
     def load_checkpoint(self, resume_path, encoder_type):
         checkpoint = torch.load(resume_path)
         required_keys = {"epoch", "encoder", "btwins_head", "optimizer"}
-        if encoder_type == "gatr":
-            required_keys.add("boundary_head")
         if not isinstance(checkpoint, dict) or not required_keys.issubset(checkpoint):
             raise ValueError(
                 "resume_path must point to a pretraining checkpoint containing "
@@ -511,8 +528,16 @@ class BTProcessor(BaseProcessor):
 
         self.encoder.load_state_dict(checkpoint["encoder"])
         self.btwins_head.load_state_dict(checkpoint["btwins_head"])
-        if self.boundary_head is not None:
-            self.boundary_head.load_state_dict(checkpoint["boundary_head"])
+        if self.contrastive_head is not None:
+            contrastive_state = checkpoint.get(
+                "contrastive_head",
+                checkpoint.get("boundary_head"),
+            )
+            if contrastive_state is None:
+                raise ValueError(
+                    "GATr resume_path must contain contrastive_head"
+                )
+            self.contrastive_head.load_state_dict(contrastive_state)
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.start_epoch = checkpoint["epoch"] + 1
 
@@ -568,111 +593,93 @@ class BTProcessor(BaseProcessor):
         return loss
 
     @ex.capture
-    def boundary_batch(
+    def contrastive_batch(
         self,
         equivariant_features,
         non_equivariant_features,
-        gatr_boundary_beta,
-        gatr_boundary_margin,
-        gatr_boundary_width,
-        gatr_boundary_variance_gamma,
+        gatr_contrastive_temperature,
+        gatr_noneq_variance_gamma,
     ):
-        if gatr_boundary_width < 0:
-            raise ValueError("gatr_boundary_width must be non-negative")
+        if len(equivariant_features) != 2:
+            raise ValueError(
+                "contrastive_batch expects exactly two equivariant views"
+            )
+        if gatr_contrastive_temperature <= 0:
+            raise ValueError("gatr_contrastive_temperature must be positive")
 
-        projected_equivariant = []
-        normalized_equivariant = []
-        for features in equivariant_features:
-            projected, normalized = self.boundary_head(features)
-            projected_equivariant.append(projected)
-            normalized_equivariant.append(normalized.detach())
+        _, z1 = self.contrastive_head(equivariant_features[0])
+        _, z2 = self.contrastive_head(equivariant_features[1])
+        _, z_neg = self.contrastive_head(non_equivariant_features)
 
-        projected_equivariant = torch.stack(projected_equivariant, dim=1)
-        normalized_equivariant = torch.stack(normalized_equivariant, dim=1)
-        _, normalized_non_equivariant = self.boundary_head(
-            non_equivariant_features
+        batch_size = z1.shape[0]
+        labels = torch.arange(batch_size, device=z1.device)
+        candidates_for_z1 = torch.cat([z2, z_neg], dim=0)
+        candidates_for_z2 = torch.cat([z1, z_neg], dim=0)
+        logits_z1 = torch.matmul(z1, candidates_for_z1.t()).div(
+            gatr_contrastive_temperature
         )
+        logits_z2 = torch.matmul(z2, candidates_for_z2.t()).div(
+            gatr_contrastive_temperature
+        )
+        loss_z1 = F.cross_entropy(logits_z1, labels)
+        loss_z2 = F.cross_entropy(logits_z2, labels)
+        loss = 0.5 * (loss_z1 + loss_z2)
 
-        center = F.normalize(normalized_equivariant.mean(dim=1), dim=-1)
-        equivariant_distances = 1.0 - torch.einsum(
-            "nkd,nd->nk",
-            normalized_equivariant,
-            center,
+        positive_similarity = (z1 * z2).sum(dim=-1)
+        negative_similarity = 0.5 * (
+            (z1 * z_neg).sum(dim=-1) + (z2 * z_neg).sum(dim=-1)
         )
-        radius = (
-            equivariant_distances.mean(dim=1)
-            + gatr_boundary_beta
-            * equivariant_distances.std(dim=1, unbiased=False)
+        noneq_feature_std = torch.sqrt(
+            z_neg.var(dim=0, unbiased=False) + 1e-4
         )
-
-        non_equivariant_distance = 1.0 - (
-            normalized_non_equivariant * center.detach()
-        ).sum(dim=-1)
-        lower_boundary = (
-            radius.detach() + gatr_boundary_margin
-        ).clamp(max=2.0)
-        upper_boundary = (
-            lower_boundary + gatr_boundary_width
-        ).clamp(max=2.0)
-
-        lower_violation = F.relu(
-            lower_boundary - non_equivariant_distance
-        )
-        upper_violation = F.relu(
-            non_equivariant_distance - upper_boundary
-        )
-        boundary_loss = (
-            lower_violation.square() + upper_violation.square()
+        noneq_variance_loss = F.relu(
+            gatr_noneq_variance_gamma - noneq_feature_std
         ).mean()
-        boundary_hit_rate = (
-            (non_equivariant_distance >= lower_boundary)
-            & (non_equivariant_distance <= upper_boundary)
-        ).float().mean()
-
-        flat_equivariant = projected_equivariant.flatten(0, 1)
-        feature_std = torch.sqrt(
-            flat_equivariant.var(dim=0, unbiased=False) + 1e-4
+        contrastive_accuracy = 0.5 * (
+            logits_z1.argmax(dim=1).eq(labels).float().mean()
+            + logits_z2.argmax(dim=1).eq(labels).float().mean()
         )
-        variance_loss = F.relu(
-            gatr_boundary_variance_gamma - feature_std
-        ).mean()
 
         self.log.update_batch(
-            "log/pretrain/boundary_loss",
-            boundary_loss.item(),
+            "log/pretrain/contrastive_loss",
+            loss.item(),
         )
         self.log.update_batch(
-            "log/pretrain/boundary_variance_loss",
-            variance_loss.item(),
+            "log/pretrain/contrastive_positive_similarity",
+            positive_similarity.mean().item(),
         )
         self.log.update_batch(
-            "log/pretrain/equivariant_radius",
-            radius.mean().item(),
+            "log/pretrain/contrastive_negative_similarity",
+            negative_similarity.mean().item(),
+        )
+        self.log.update_batch(
+            "log/pretrain/contrastive_accuracy",
+            contrastive_accuracy.item(),
+        )
+        self.log.update_batch(
+            "log/pretrain/noneq_variance_loss",
+            noneq_variance_loss.item(),
+        )
+        self.log.update_batch(
+            "log/pretrain/noneq_feature_std",
+            noneq_feature_std.mean().item(),
+        )
+        self.log.update_batch(
+            "log/pretrain/equivariant_distance",
+            (1.0 - positive_similarity).mean().item(),
         )
         self.log.update_batch(
             "log/pretrain/non_equivariant_distance",
-            non_equivariant_distance.mean().item(),
+            (1.0 - negative_similarity).mean().item(),
         )
-        self.log.update_batch(
-            "log/pretrain/boundary_lower",
-            lower_boundary.mean().item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/boundary_upper",
-            upper_boundary.mean().item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/boundary_hit_rate",
-            boundary_hit_rate.item(),
-        )
-        return boundary_loss, variance_loss
+        return loss, noneq_variance_loss
 
     @ex.capture
     def train_epoch(self, epoch, pretrain_epoch, pretrain_lr, encoder_type,
                     gatr_translation_range, gatr_y_rotation_degrees,
                     gatr_reflection_prob, gatr_num_equivariant_views,
-                    gatr_boundary_loss_weight,
-                    gatr_boundary_variance_weight,
+                    gatr_contrastive_loss_weight,
+                    gatr_noneq_variance_loss_weight,
                     gatr_non_eq_shear_prob, gatr_non_eq_shear_amplitude,
                     gatr_non_eq_noise_prob, gatr_non_eq_noise_std,
                     gatr_non_eq_blur_prob, gatr_non_eq_blur_kernel,
@@ -680,8 +687,8 @@ class BTProcessor(BaseProcessor):
                     gatr_non_eq_axis_mask_prob):
         self.encoder.train()
         self.btwins_head.train()
-        if self.boundary_head is not None:
-            self.boundary_head.train()
+        if self.contrastive_head is not None:
+            self.contrastive_head.train()
 
         loader = self.data_loader['train']
         self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=pretrain_lr)
@@ -693,28 +700,40 @@ class BTProcessor(BaseProcessor):
             data = prepare_encoder_input(data)
 
             if encoder_type == "gatr":
-                if gatr_num_equivariant_views < 2:
+                if gatr_num_equivariant_views != 2:
                     raise ValueError(
-                        "gatr_num_equivariant_views must be at least 2"
+                        "gatr_num_equivariant_views must be exactly 2 for CL pretraining"
                     )
 
-                equivariant_features = []
-                for _ in range(gatr_num_equivariant_views):
-                    equivariant_x = gatr_random_translation(
-                        data,
-                        translation_range=gatr_translation_range,
-                    )
-                    equivariant_x = gatr_random_y_rotation(
-                        equivariant_x,
-                        y_rotation_degrees=gatr_y_rotation_degrees,
-                    )
-                    equivariant_x = gatr_random_reflection(
-                        equivariant_x,
-                        reflection_prob=gatr_reflection_prob,
-                    )
-                    equivariant_features.append(self.encoder(equivariant_x))
+                eq_input1 = gatr_random_translation(
+                    data,
+                    translation_range=gatr_translation_range,
+                )
+                eq_input1 = gatr_random_y_rotation(
+                    eq_input1,
+                    y_rotation_degrees=gatr_y_rotation_degrees,
+                )
+                eq_input1 = gatr_random_reflection(
+                    eq_input1,
+                    reflection_prob=gatr_reflection_prob,
+                )
+                eq_feat1 = self.encoder(eq_input1)
 
-                non_equivariant_x = gatr_non_equivariant_augmentation(
+                eq_input2 = gatr_random_translation(
+                    data,
+                    translation_range=gatr_translation_range,
+                )
+                eq_input2 = gatr_random_y_rotation(
+                    eq_input2,
+                    y_rotation_degrees=gatr_y_rotation_degrees,
+                )
+                eq_input2 = gatr_random_reflection(
+                    eq_input2,
+                    reflection_prob=gatr_reflection_prob,
+                )
+                eq_feat2 = self.encoder(eq_input2)
+
+                noneq_input = gatr_non_equivariant_augmentation(
                     data,
                     shear_prob=gatr_non_eq_shear_prob,
                     shear_amplitude=gatr_non_eq_shear_amplitude,
@@ -726,28 +745,31 @@ class BTProcessor(BaseProcessor):
                     blur_sigma_max=gatr_non_eq_blur_sigma_max,
                     axis_mask_prob=gatr_non_eq_axis_mask_prob,
                 )
-                non_equivariant_features = self.encoder(non_equivariant_x)
+                noneq_feat = self.encoder(noneq_input)
 
                 loss_bt = self.btwins_multiview(
-                    equivariant_features,
+                    [eq_feat1, eq_feat2],
                     mode="equivariant",
                 )
-                loss_boundary, loss_variance = self.boundary_batch(
-                    equivariant_features,
-                    non_equivariant_features,
+                loss_contrastive, loss_noneq_variance = self.contrastive_batch(
+                    [eq_feat1, eq_feat2],
+                    noneq_feat,
                 )
                 loss = (
                     loss_bt
-                    + gatr_boundary_loss_weight * loss_boundary
-                    + gatr_boundary_variance_weight * loss_variance
+                    + gatr_contrastive_loss_weight * loss_contrastive
+                    + gatr_noneq_variance_loss_weight * loss_noneq_variance
                 )
                 self.log.update_batch(
-                    "log/pretrain/weighted_boundary_loss",
-                    (gatr_boundary_loss_weight * loss_boundary).item(),
+                    "log/pretrain/weighted_contrastive_loss",
+                    (gatr_contrastive_loss_weight * loss_contrastive).item(),
                 )
                 self.log.update_batch(
-                    "log/pretrain/weighted_boundary_variance_loss",
-                    (gatr_boundary_variance_weight * loss_variance).item(),
+                    "log/pretrain/weighted_noneq_variance_loss",
+                    (
+                        gatr_noneq_variance_loss_weight
+                        * loss_noneq_variance
+                    ).item(),
                 )
                 self.log.update_batch(
                     "log/pretrain/total_loss",
@@ -784,10 +806,11 @@ class BTProcessor(BaseProcessor):
     def save_model(self, epoch):
         os.makedirs(os.path.dirname(self.weight_path) or ".", exist_ok=True)
         torch.save(self.encoder.state_dict(), self.weight_path)
+        print("Saved encoder weights to {}".format(self.weight_path))
 
     @ex.capture
     def save_checkpoint(self, epoch, encoder_type):
-        checkpoint_path = self.weight_path
+        checkpoint_path = self.checkpoint_path
         os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
         numpy_rng_state = np.random.get_state()
         checkpoint = {
@@ -811,8 +834,8 @@ class BTProcessor(BaseProcessor):
                 },
                 "python_rng_state": random.getstate(),
         }
-        if self.boundary_head is not None:
-            checkpoint["boundary_head"] = self.boundary_head.state_dict()
+        if self.contrastive_head is not None:
+            checkpoint["contrastive_head"] = self.contrastive_head.state_dict()
         torch.save(checkpoint, checkpoint_path)
         print("Saved pretraining checkpoint to {}".format(checkpoint_path))
         

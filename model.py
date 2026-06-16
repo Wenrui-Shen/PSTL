@@ -123,27 +123,30 @@ class GATrBTwins(nn.Module):
         return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
 
-class GATrBoundaryHead(nn.Module):
+class GATrContrastiveHead(nn.Module):
 
     @ex.capture
     def __init__(
         self,
         hidden_size,
-        gatr_boundary_hidden_size,
-        gatr_boundary_size,
+        gatr_contrastive_hidden_size,
+        gatr_contrastive_size,
     ):
         super().__init__()
         self.projector = nn.Sequential(
-            nn.Linear(hidden_size, gatr_boundary_hidden_size, bias=False),
-            nn.LayerNorm(gatr_boundary_hidden_size),
+            nn.Linear(hidden_size, gatr_contrastive_hidden_size, bias=False),
+            nn.LayerNorm(gatr_contrastive_hidden_size),
             nn.ReLU(True),
-            nn.Linear(gatr_boundary_hidden_size, gatr_boundary_size, bias=False),
+            nn.Linear(gatr_contrastive_hidden_size, gatr_contrastive_size, bias=False),
         )
 
     def forward(self, features):
         projected = self.projector(features)
         normalized = F.normalize(projected, dim=-1)
         return projected, normalized
+
+
+GATrBoundaryHead = GATrContrastiveHead
     
 @ex.capture 
 def get_stream(data, view):
