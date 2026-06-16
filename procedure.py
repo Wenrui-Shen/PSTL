@@ -184,7 +184,7 @@ class BaseProcessor:
     def adjust_learning_rate(self, optimizer, current_epoch, max_epoch, lr_min=0, lr_max=0.1, warmup_epoch=10):
 
         if current_epoch < warmup_epoch:
-            lr = lr_max * current_epoch / warmup_epoch
+            lr = lr_max * (current_epoch + 1) / warmup_epoch
         else:
             lr = lr_min + (lr_max-lr_min)*(1 + cos(pi * (current_epoch - warmup_epoch) / (max_epoch - warmup_epoch))) / 2
         for param_group in optimizer.param_groups:
