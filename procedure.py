@@ -160,6 +160,8 @@ class BaseProcessor:
     def load_weights(self, model=None, weight_path=None):
         if weight_path:
             pretrained_dict = torch.load(weight_path)
+            if isinstance(pretrained_dict, dict) and "encoder" in pretrained_dict:
+                pretrained_dict = pretrained_dict["encoder"]
             model.load_state_dict(pretrained_dict)
 
     @ex.capture
