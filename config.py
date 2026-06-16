@@ -54,8 +54,8 @@ def my_config():
     gatr_boundary_beta = 1.0
     gatr_boundary_margin = 0.05
     gatr_boundary_width = 0.10
-    gatr_boundary_loss_weight = 0.1
-    gatr_boundary_variance_weight = 0.01
+    gatr_boundary_loss_weight = 50.0
+    gatr_boundary_variance_weight = 1.0
     gatr_boundary_variance_gamma = 1.0
     gatr_non_eq_shear_prob = 0.8
     gatr_non_eq_shear_amplitude = 0.2

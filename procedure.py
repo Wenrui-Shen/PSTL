@@ -741,6 +741,18 @@ class BTProcessor(BaseProcessor):
                     + gatr_boundary_loss_weight * loss_boundary
                     + gatr_boundary_variance_weight * loss_variance
                 )
+                self.log.update_batch(
+                    "log/pretrain/weighted_boundary_loss",
+                    (gatr_boundary_loss_weight * loss_boundary).item(),
+                )
+                self.log.update_batch(
+                    "log/pretrain/weighted_boundary_variance_loss",
+                    (gatr_boundary_variance_weight * loss_variance).item(),
+                )
+                self.log.update_batch(
+                    "log/pretrain/total_loss",
+                    loss.item(),
+                )
             else:
                 # Preserve the original PSTL streams and pretraining tasks for ST-GCN.
                 ignore_joint = central_spacial_mask()
