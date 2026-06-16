@@ -609,7 +609,7 @@ class BTProcessor(BaseProcessor):
 
         _, z1 = self.contrastive_head(equivariant_features[0])
         _, z2 = self.contrastive_head(equivariant_features[1])
-        _, z_neg = self.contrastive_head(non_equivariant_features)
+        p_neg, z_neg = self.contrastive_head(non_equivariant_features)
 
         batch_size = z1.shape[0]
         labels = torch.arange(batch_size, device=z1.device)
@@ -630,7 +630,7 @@ class BTProcessor(BaseProcessor):
             (z1 * z_neg).sum(dim=-1) + (z2 * z_neg).sum(dim=-1)
         )
         noneq_feature_std = torch.sqrt(
-            z_neg.var(dim=0, unbiased=False) + 1e-4
+            p_neg.var(dim=0, unbiased=False) + 1e-4
         )
         noneq_variance_loss = F.relu(
             gatr_noneq_variance_gamma - noneq_feature_std
