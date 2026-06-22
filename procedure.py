@@ -5,7 +5,6 @@ from logger import Log
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import random
 from tqdm import tqdm
@@ -486,12 +485,8 @@ class BTProcessor(BaseProcessor):
         feature_size = get_encoder_output_dim(self.encoder, hidden_size)
         if encoder_type == "gatr":
             self.btwins_head = GATrBTwins(hidden_size=feature_size).cuda()
-            self.contrastive_head = GATrContrastiveHead(
-                hidden_size=feature_size
-            ).cuda()
         else:
             self.btwins_head = BTwins(hidden_size=feature_size).cuda()
-            self.contrastive_head = None
 
     @ex.capture
     def load_optim(self, pretrain_lr, pretrain_epoch, weight_decay, resume_path,
@@ -500,8 +495,6 @@ class BTProcessor(BaseProcessor):
             {'params': self.encoder.parameters()},
             {'params': self.btwins_head.parameters()},
         ]
-        if self.contrastive_head is not None:
-            parameter_groups.append({'params': self.contrastive_head.parameters()})
         self.optimizer = torch.optim.Adam(
             parameter_groups,
             weight_decay=weight_decay,
@@ -530,17 +523,16 @@ class BTProcessor(BaseProcessor):
 
         self.encoder.load_state_dict(checkpoint["encoder"])
         self.btwins_head.load_state_dict(checkpoint["btwins_head"])
-        if self.contrastive_head is not None:
-            contrastive_state = checkpoint.get(
-                "contrastive_head",
-                checkpoint.get("boundary_head"),
-            )
-            if contrastive_state is None:
-                raise ValueError(
-                    "GATr resume_path must contain contrastive_head"
+        try:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        except ValueError as error:
+            print(
+                "Skipped optimizer state from {} because its parameter groups "
+                "do not match the current BT-only pretraining setup: {}".format(
+                    resume_path,
+                    error,
                 )
-            self.contrastive_head.load_state_dict(contrastive_state)
-        self.optimizer.load_state_dict(checkpoint["optimizer"])
+            )
         self.start_epoch = checkpoint["epoch"] + 1
 
         if "torch_rng_state" in checkpoint:
@@ -576,121 +568,12 @@ class BTProcessor(BaseProcessor):
         self.log.update_batch("log/pretrain/"+mode+"_bt_loss", BTloss.item())
         return BTloss
 
-    def btwins_multiview(self, features, mode):
-        projected = [self.btwins_head.project(item) for item in features]
-        pair_losses = []
-        for first in range(len(projected)):
-            for second in range(first + 1, len(projected)):
-                pair_losses.append(
-                    self.btwins_head.loss_from_projected(
-                        projected[first],
-                        projected[second],
-                    )
-                )
-        loss = torch.stack(pair_losses).mean()
-        self.log.update_batch(
-            "log/pretrain/" + mode + "_bt_loss",
-            loss.item(),
-        )
-        return loss
-
-    @ex.capture
-    def contrastive_batch(
-        self,
-        equivariant_features,
-        non_equivariant_features,
-        gatr_contrastive_temperature,
-        gatr_noneq_variance_gamma,
-    ):
-        if len(equivariant_features) != 2:
-            raise ValueError(
-                "contrastive_batch expects exactly two equivariant views"
-            )
-        if gatr_contrastive_temperature <= 0:
-            raise ValueError("gatr_contrastive_temperature must be positive")
-
-        _, z1 = self.contrastive_head(equivariant_features[0])
-        _, z2 = self.contrastive_head(equivariant_features[1])
-        p_neg, z_neg = self.contrastive_head(non_equivariant_features)
-
-        batch_size = z1.shape[0]
-        labels = torch.arange(batch_size, device=z1.device)
-        candidates_for_z1 = torch.cat([z2, z_neg], dim=0)
-        candidates_for_z2 = torch.cat([z1, z_neg], dim=0)
-        logits_z1 = torch.matmul(z1, candidates_for_z1.t()).div(
-            gatr_contrastive_temperature
-        )
-        logits_z2 = torch.matmul(z2, candidates_for_z2.t()).div(
-            gatr_contrastive_temperature
-        )
-        loss_z1 = F.cross_entropy(logits_z1, labels)
-        loss_z2 = F.cross_entropy(logits_z2, labels)
-        loss = 0.5 * (loss_z1 + loss_z2)
-
-        positive_similarity = (z1 * z2).sum(dim=-1)
-        negative_similarity = 0.5 * (
-            (z1 * z_neg).sum(dim=-1) + (z2 * z_neg).sum(dim=-1)
-        )
-        noneq_feature_std = torch.sqrt(
-            p_neg.var(dim=0, unbiased=False) + 1e-4
-        )
-        noneq_variance_loss = F.relu(
-            gatr_noneq_variance_gamma - noneq_feature_std
-        ).mean()
-        contrastive_accuracy = 0.5 * (
-            logits_z1.argmax(dim=1).eq(labels).float().mean()
-            + logits_z2.argmax(dim=1).eq(labels).float().mean()
-        )
-
-        self.log.update_batch(
-            "log/pretrain/contrastive_loss",
-            loss.item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/contrastive_positive_similarity",
-            positive_similarity.mean().item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/contrastive_negative_similarity",
-            negative_similarity.mean().item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/contrastive_accuracy",
-            contrastive_accuracy.item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/noneq_variance_loss",
-            noneq_variance_loss.item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/noneq_feature_std",
-            noneq_feature_std.mean().item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/equivariant_distance",
-            (1.0 - positive_similarity).mean().item(),
-        )
-        self.log.update_batch(
-            "log/pretrain/non_equivariant_distance",
-            (1.0 - negative_similarity).mean().item(),
-        )
-        return loss, noneq_variance_loss
-
     @ex.capture
     def train_epoch(self, epoch, pretrain_epoch, pretrain_lr, encoder_type,
                     gatr_translation_range, gatr_y_rotation_degrees,
-                    gatr_reflection_prob, gatr_num_equivariant_views,
-                    gatr_contrastive_loss_weight,
-                    gatr_noneq_variance_loss_weight,
-                    gatr_non_eq_shear_prob, gatr_non_eq_shear_amplitude,
-                    gatr_non_eq_noise_prob, gatr_non_eq_noise_std,
-                    gatr_non_eq_blur_prob, gatr_non_eq_blur_kernel,
-                    gatr_non_eq_blur_sigma_min, gatr_non_eq_blur_sigma_max,
-                    gatr_non_eq_axis_mask_prob):
+                    gatr_reflection_prob):
         self.encoder.train()
         self.btwins_head.train()
-        if self.contrastive_head is not None:
-            self.contrastive_head.train()
 
         loader = self.data_loader['train']
         self.adjust_learning_rate(self.optimizer, current_epoch=epoch, max_epoch=pretrain_epoch, lr_max=pretrain_lr)
@@ -702,11 +585,6 @@ class BTProcessor(BaseProcessor):
             data = prepare_encoder_input(data)
 
             if encoder_type == "gatr":
-                if gatr_num_equivariant_views != 2:
-                    raise ValueError(
-                        "gatr_num_equivariant_views must be exactly 2 for CL pretraining"
-                    )
-
                 eq_input1 = gatr_random_translation(
                     data,
                     translation_range=gatr_translation_range,
@@ -735,43 +613,10 @@ class BTProcessor(BaseProcessor):
                 )
                 eq_feat2 = self.encoder(eq_input2)
 
-                noneq_input = gatr_non_equivariant_augmentation(
-                    data,
-                    shear_prob=gatr_non_eq_shear_prob,
-                    shear_amplitude=gatr_non_eq_shear_amplitude,
-                    noise_prob=gatr_non_eq_noise_prob,
-                    noise_std=gatr_non_eq_noise_std,
-                    blur_prob=gatr_non_eq_blur_prob,
-                    blur_kernel=gatr_non_eq_blur_kernel,
-                    blur_sigma_min=gatr_non_eq_blur_sigma_min,
-                    blur_sigma_max=gatr_non_eq_blur_sigma_max,
-                    axis_mask_prob=gatr_non_eq_axis_mask_prob,
-                )
-                noneq_feat = self.encoder(noneq_input)
-
-                loss_bt = self.btwins_multiview(
-                    [eq_feat1, eq_feat2],
+                loss = self.btwins_batch(
+                    eq_feat1,
+                    eq_feat2,
                     mode="equivariant",
-                )
-                loss_contrastive, loss_noneq_variance = self.contrastive_batch(
-                    [eq_feat1, eq_feat2],
-                    noneq_feat,
-                )
-                loss = (
-                    loss_bt
-                    + gatr_contrastive_loss_weight * loss_contrastive
-                    + gatr_noneq_variance_loss_weight * loss_noneq_variance
-                )
-                self.log.update_batch(
-                    "log/pretrain/weighted_contrastive_loss",
-                    (gatr_contrastive_loss_weight * loss_contrastive).item(),
-                )
-                self.log.update_batch(
-                    "log/pretrain/weighted_noneq_variance_loss",
-                    (
-                        gatr_noneq_variance_loss_weight
-                        * loss_noneq_variance
-                    ).item(),
                 )
                 self.log.update_batch(
                     "log/pretrain/total_loss",
@@ -836,8 +681,6 @@ class BTProcessor(BaseProcessor):
                 },
                 "python_rng_state": random.getstate(),
         }
-        if self.contrastive_head is not None:
-            checkpoint["contrastive_head"] = self.contrastive_head.state_dict()
         torch.save(checkpoint, checkpoint_path)
         print("Saved pretraining checkpoint to {}".format(checkpoint_path))
         
