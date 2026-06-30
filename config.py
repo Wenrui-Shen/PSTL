@@ -94,9 +94,6 @@ def my_config():
     shear_amp = 1
     mask_joint = 8
     mask_frame = 10
-    gatr_translation_range = 0.5
-    gatr_y_rotation_degrees = 30.0
-    gatr_reflection_prob = 0.5
     ############################ Barlow Twins #############################
     pj_size = 6144
     lambd = 2e-4

@@ -569,9 +569,7 @@ class BTProcessor(BaseProcessor):
         return BTloss
 
     @ex.capture
-    def train_epoch(self, epoch, pretrain_epoch, pretrain_lr, encoder_type,
-                    gatr_translation_range, gatr_y_rotation_degrees,
-                    gatr_reflection_prob):
+    def train_epoch(self, epoch, pretrain_epoch, pretrain_lr, encoder_type):
         self.encoder.train()
         self.btwins_head.train()
 
@@ -585,38 +583,20 @@ class BTProcessor(BaseProcessor):
             data = prepare_encoder_input(data)
 
             if encoder_type == "gatr":
-                eq_input1 = gatr_random_translation(
-                    data,
-                    translation_range=gatr_translation_range,
-                )
-                eq_input1 = gatr_random_y_rotation(
-                    eq_input1,
-                    y_rotation_degrees=gatr_y_rotation_degrees,
-                )
-                eq_input1 = gatr_random_reflection(
-                    eq_input1,
-                    reflection_prob=gatr_reflection_prob,
-                )
-                eq_feat1 = self.encoder(eq_input1)
+                input1 = shear(crop(data))
+                input1 = random_rotate(input1)
+                input1 = random_spatial_flip(input1)
+                feat1 = self.encoder(input1)
 
-                eq_input2 = gatr_random_translation(
-                    data,
-                    translation_range=gatr_translation_range,
-                )
-                eq_input2 = gatr_random_y_rotation(
-                    eq_input2,
-                    y_rotation_degrees=gatr_y_rotation_degrees,
-                )
-                eq_input2 = gatr_random_reflection(
-                    eq_input2,
-                    reflection_prob=gatr_reflection_prob,
-                )
-                eq_feat2 = self.encoder(eq_input2)
+                input2 = shear(crop(data))
+                input2 = random_rotate(input2)
+                input2 = random_spatial_flip(input2)
+                feat2 = self.encoder(input2)
 
                 loss = self.btwins_batch(
-                    eq_feat1,
-                    eq_feat2,
-                    mode="equivariant",
+                    feat1,
+                    feat2,
+                    mode="input1",
                 )
                 self.log.update_batch(
                     "log/pretrain/total_loss",
