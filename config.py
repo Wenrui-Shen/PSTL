@@ -13,7 +13,7 @@ def my_config():
     save_lp = False
     save_finetune = False
     save_semi = False
-    pretrain_epoch = 150
+    pretrain_epoch = 50
     ft_epoch = 150
     lp_epoch = 150
     pretrain_lr = 5e-3
@@ -34,12 +34,14 @@ def my_config():
     }
     edge_importance_weighting = True
     ################################ GATr ################################
-    gatr_out_mv_channels = 1
-    gatr_in_s_channels = 1
-    gatr_hidden_mv_channels = 32
-    gatr_hidden_s_channels = 1
+    # Structured auxiliary scalars:
+    # 10 coarse time positions + 25 joints + 2 people + 1 global-token flag.
+    gatr_out_mv_channels = 256
+    gatr_in_s_channels = 38
+    gatr_hidden_mv_channels = 256
+    gatr_hidden_s_channels = 32
     gatr_out_s_channels = 1
-    gatr_num_blocks = 1
+    gatr_num_blocks = 2
     gatr_num_heads = 8
     gatr_temporal_refinement = 5
     gatr_dropout = 0.5

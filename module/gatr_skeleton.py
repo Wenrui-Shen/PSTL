@@ -4,6 +4,7 @@ from typing import Iterable, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from .gatr import GATr, MLPConfig, SelfAttentionConfig, embed_point, embed_translation
 
@@ -206,14 +207,20 @@ class SkeletonPGAInput(nn.Module):
 
 
 class SkeletonGATrEncoder(nn.Module):
-    """GATr encoder with the same output contract as the PSTL ST-GCN encoder."""
+    """GATr encoder with a global action token and structured scalar positions.
+
+    Regular tokens are identified by separate coarse-time, joint, and person one-hot features in
+    the auxiliary scalar channels. The global token has no spatial or temporal position and is
+    identified by its own scalar flag. The encoder output consists of the grade-0 components of
+    the global token's output multivector channels.
+    """
 
     def __init__(
         self,
-        out_mv_channels: int = 1,
-        in_s_channels: int = 1,
+        out_mv_channels: int = 32,
+        in_s_channels: Optional[int] = None,
         hidden_mv_channels: int = 8,
-        hidden_s_channels: int = 1,
+        hidden_s_channels: int = 32,
         out_s_channels: int = 1,
         num_blocks: int = 6,
         num_heads: int = 4,
@@ -227,29 +234,45 @@ class SkeletonGATrEncoder(nn.Module):
         super().__init__()
         if out_mv_channels < 1:
             raise ValueError("out_mv_channels must be at least 1")
-        if out_mv_channels != 1:
-            raise ValueError("Flattened MV output currently requires out_mv_channels=1")
-        if in_s_channels < 1 or hidden_s_channels < 1 or out_s_channels < 1:
+        if hidden_s_channels < 1 or out_s_channels < 1:
             raise ValueError("Scalar channel counts must be at least 1")
         if num_frames % temporal_refinement != 0:
             raise ValueError("num_frames must be divisible by temporal_refinement")
 
-        self.in_s_channels = in_s_channels
-        self.output_dim = (
-            num_frames // temporal_refinement * num_joints * num_people * 16
+        self.refined_frames = num_frames // temporal_refinement
+        self.num_joints = num_joints
+        self.num_people = num_people
+        self.num_regular_tokens = self.refined_frames * num_joints * num_people
+        self.structured_s_channels = (
+            self.refined_frames + num_joints + num_people + 1
         )
+        if in_s_channels is not None and in_s_channels != self.structured_s_channels:
+            raise ValueError(
+                "in_s_channels must match the structured scalar encoding size "
+                f"{self.structured_s_channels} "
+                "(coarse time + joint + person + global flag), "
+                f"found {in_s_channels}"
+            )
+
+        self.in_s_channels = self.structured_s_channels
+        self.output_dim = out_mv_channels
         self.input_adapter = SkeletonPGAInput(temporal_refinement=temporal_refinement)
+        self.register_buffer(
+            "token_scalars",
+            self._build_token_scalars(),
+            persistent=False,
+        )
         self.gatr = GATr(
             in_mv_channels=2 * temporal_refinement,
             out_mv_channels=out_mv_channels,
             hidden_mv_channels=hidden_mv_channels,
-            in_s_channels=in_s_channels,
+            in_s_channels=self.in_s_channels,
             out_s_channels=out_s_channels,
             hidden_s_channels=hidden_s_channels,
             attention=SelfAttentionConfig(
                 num_heads=num_heads,
                 multi_query=True,
-                pos_encoding=True,
+                pos_encoding=False,
             ),
             mlp=MLPConfig(),
             num_blocks=num_blocks,
@@ -257,25 +280,74 @@ class SkeletonGATrEncoder(nn.Module):
             dropout_prob=dropout_prob,
         )
 
+    def _build_token_scalars(self) -> torch.Tensor:
+        """Build factorized scalar positions in the same order as the MV tokens."""
+        time_index = (
+            torch.arange(self.refined_frames)
+            .view(self.refined_frames, 1, 1)
+            .expand(self.refined_frames, self.num_joints, self.num_people)
+            .reshape(-1)
+        )
+        joint_index = (
+            torch.arange(self.num_joints)
+            .view(1, self.num_joints, 1)
+            .expand(self.refined_frames, self.num_joints, self.num_people)
+            .reshape(-1)
+        )
+        person_index = (
+            torch.arange(self.num_people)
+            .view(1, 1, self.num_people)
+            .expand(self.refined_frames, self.num_joints, self.num_people)
+            .reshape(-1)
+        )
+
+        regular_scalars = torch.cat(
+            (
+                F.one_hot(time_index, num_classes=self.refined_frames),
+                F.one_hot(joint_index, num_classes=self.num_joints),
+                F.one_hot(person_index, num_classes=self.num_people),
+                torch.zeros(self.num_regular_tokens, 1, dtype=torch.long),
+            ),
+            dim=-1,
+        ).to(torch.float32)
+
+        global_scalars = torch.zeros(1, self.structured_s_channels)
+        global_scalars[0, -1] = 1.0
+        return torch.cat((global_scalars, regular_scalars), dim=0)
+
     def forward(
         self,
         skeleton: torch.Tensor,
         ignore_joint: Optional[Iterable[int]] = None,
     ) -> torch.Tensor:
-        """Encode skeletons into one flattened multivector feature per action."""
+        """Encode skeletons into the global token's invariant MV grade-0 features."""
         multivectors = self.input_adapter(skeleton, ignore_joint=ignore_joint)
-        scalars = torch.zeros(
-            *multivectors.shape[:-2],
-            self.in_s_channels,
+        if multivectors.shape[1] != self.num_regular_tokens:
+            raise RuntimeError(
+                f"Expected {self.num_regular_tokens} regular tokens, "
+                f"found {multivectors.shape[1]}"
+            )
+
+        global_multivector = torch.zeros(
+            multivectors.shape[0],
+            1,
+            multivectors.shape[-2],
+            multivectors.shape[-1],
             device=multivectors.device,
             dtype=multivectors.dtype,
         )
+        multivectors = torch.cat((global_multivector, multivectors), dim=1)
+        scalars = self.token_scalars.to(
+            device=multivectors.device,
+            dtype=multivectors.dtype,
+        )
+        scalars = scalars.unsqueeze(0).expand(multivectors.shape[0], -1, -1)
 
         multivector_outputs, _ = self.gatr(multivectors, scalars=scalars)
-        features = multivector_outputs.squeeze(-2).flatten(start_dim=1)
+        features = multivector_outputs[:, 0, :, 0]
         if features.shape[1] != self.output_dim:
             raise RuntimeError(
-                f"Expected flattened MV feature size {self.output_dim}, "
+                f"Expected global MV grade-0 feature size {self.output_dim}, "
                 f"found {features.shape[1]}"
             )
         return features
