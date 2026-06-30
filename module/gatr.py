@@ -3274,16 +3274,28 @@ class GATrBlock(nn.Module):
         outputs_mv = multivectors + h_mv
         outputs_s = scalars + h_s
 
-        # MLP block disabled: keep attention-only GATr blocks.
-        # mlp_kwargs = dict(multivectors=outputs_mv, scalars=outputs_s, reference_mv=reference_mv)
-        # if self._checkpoint_mlp:
-        #     h_mv, h_s = checkpoint_(self._mlp_block, use_reentrant=False, **mlp_kwargs)
-        # else:
-        #     h_mv, h_s = self._mlp_block(outputs_mv, scalars=outputs_s, reference_mv=reference_mv)
-        #
-        # # Skip connection
-        # outputs_mv = outputs_mv + h_mv
-        # outputs_s = outputs_s + h_s
+        # MLP block
+        mlp_kwargs = dict(
+            multivectors=outputs_mv,
+            scalars=outputs_s,
+            reference_mv=reference_mv,
+        )
+        if self._checkpoint_mlp:
+            h_mv, h_s = checkpoint_(
+                self._mlp_block,
+                use_reentrant=False,
+                **mlp_kwargs,
+            )
+        else:
+            h_mv, h_s = self._mlp_block(
+                outputs_mv,
+                scalars=outputs_s,
+                reference_mv=reference_mv,
+            )
+
+        # Skip connection
+        outputs_mv = outputs_mv + h_mv
+        outputs_s = outputs_s + h_s
 
         return outputs_mv, outputs_s
 

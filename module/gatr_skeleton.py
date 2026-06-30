@@ -6,7 +6,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .gatr import GATr, MLPConfig, SelfAttentionConfig, embed_point, embed_translation
+from .gatr import (
+    EquiLinear,
+    GATr,
+    MLPConfig,
+    SelfAttentionConfig,
+    embed_point,
+    embed_translation,
+)
 
 
 # Pairs follow the PSTL convention: (child, parent), using one-based NTU joint indices.
@@ -264,7 +271,9 @@ class SkeletonGATrEncoder(nn.Module):
         )
         self.gatr = GATr(
             in_mv_channels=2 * temporal_refinement,
-            out_mv_channels=out_mv_channels,
+            # Keep the per-token backbone output narrow. The wide output projection is applied
+            # only to the global token below.
+            out_mv_channels=hidden_mv_channels,
             hidden_mv_channels=hidden_mv_channels,
             in_s_channels=self.in_s_channels,
             out_s_channels=out_s_channels,
@@ -278,6 +287,12 @@ class SkeletonGATrEncoder(nn.Module):
             num_blocks=num_blocks,
             checkpoint=["block"] if checkpoint_blocks else None,
             dropout_prob=dropout_prob,
+        )
+        self.global_readout = EquiLinear(
+            hidden_mv_channels,
+            out_mv_channels,
+            in_s_channels=None,
+            out_s_channels=None,
         )
 
     def _build_token_scalars(self) -> torch.Tensor:
@@ -344,7 +359,9 @@ class SkeletonGATrEncoder(nn.Module):
         scalars = scalars.unsqueeze(0).expand(multivectors.shape[0], -1, -1)
 
         multivector_outputs, _ = self.gatr(multivectors, scalars=scalars)
-        features = multivector_outputs[:, 0, :, 0]
+        global_multivector = multivector_outputs[:, 0]
+        global_multivector, _ = self.global_readout(global_multivector)
+        features = global_multivector[..., 0]
         if features.shape[1] != self.output_dim:
             raise RuntimeError(
                 f"Expected global MV grade-0 feature size {self.output_dim}, "

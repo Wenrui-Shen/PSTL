@@ -36,9 +36,10 @@ def my_config():
     ################################ GATr ################################
     # Structured auxiliary scalars:
     # 10 coarse time positions + 25 joints + 2 people + 1 global-token flag.
+    # The 256-channel readout is applied only after selecting the global token.
     gatr_out_mv_channels = 256
     gatr_in_s_channels = 38
-    gatr_hidden_mv_channels = 256
+    gatr_hidden_mv_channels = 64
     gatr_hidden_s_channels = 32
     gatr_out_s_channels = 1
     gatr_num_blocks = 2
