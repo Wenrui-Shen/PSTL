@@ -832,7 +832,11 @@ class OSEProcessor(BaseProcessor):
     def btwins_batch(self, feat1, feat2, mode):
         BTloss = self.btwins_head(feat1, feat2)
         BTloss = torch.mean(BTloss)
-        self.log.update_batch("log/ose_pretrain/"+mode+"_bt_loss", BTloss.item())
+        log_name = {
+            "temp_mask": "bt_temp",
+            "joint_mask": "bt_joint",
+        }.get(mode, mode)
+        self.log.update_batch("log/ose_pretrain/"+log_name, BTloss.item())
         return BTloss
 
     def stgcn_base_aug(self, data):
@@ -858,9 +862,9 @@ class OSEProcessor(BaseProcessor):
 
     @ex.capture
     def compute_ose_loss(self, epoch, input1, input2_ose, feat1,
-                         pretrain_epoch, ose_use_ema, ose_ema_momentum,
+                         ose_use_ema, ose_ema_momentum,
                          ose_topk, ose_alpha, ose_lambda, ose_mu,
-                         ose_warmup_epoch, ose_mix_beta):
+                         ose_warmup_epoch, ose_mix_beta, ose_log_detail):
         z_student = self.ose_projector(feat1)
 
         with torch.no_grad():
@@ -876,7 +880,7 @@ class OSEProcessor(BaseProcessor):
         if epoch < ose_warmup_epoch or memory is None or memory.shape[0] < 1:
             self.ose_memory.enqueue(z_teacher)
             zero = z_student.new_zeros(())
-            return zero, zero, zero, zero
+            return zero, zero, zero
 
         exemplar_input = self.exemplar_aug()
         exemplar_features = self.encoder(exemplar_input)
@@ -912,16 +916,15 @@ class OSEProcessor(BaseProcessor):
                 permutation=permutation,
             )
 
-        ramp = min(1.0, float(epoch + 1) / max(1, pretrain_epoch))
-        ose_loss = ramp * (ose_lambda * proto_loss + ose_mu * (mix_proto + mix_ins))
+        ose_loss = ose_lambda * proto_loss + ose_mu * (mix_proto + mix_ins)
         self.ose_memory.enqueue(z_teacher)
 
-        self.log.update_batch("log/ose_pretrain/align_loss", align_loss.item())
-        self.log.update_batch("log/ose_pretrain/disp_loss", disp_loss.item())
-        self.log.update_batch("log/ose_pretrain/mix_proto_loss", mix_proto.item())
-        self.log.update_batch("log/ose_pretrain/mix_ins_loss", mix_ins.item())
-        self.log.update_batch("log/ose_pretrain/ose_loss", ose_loss.item())
-        return ose_loss, align_loss, disp_loss, mix_proto + mix_ins
+        if ose_log_detail:
+            self.log.update_batch("log/ose_pretrain/align_loss", align_loss.item())
+            self.log.update_batch("log/ose_pretrain/disp_loss", disp_loss.item())
+            self.log.update_batch("log/ose_pretrain/mix_proto_loss", mix_proto.item())
+            self.log.update_batch("log/ose_pretrain/mix_ins_loss", mix_ins.item())
+        return ose_loss, proto_loss, mix_proto + mix_ins
 
     @ex.capture
     def train_epoch(self, epoch, pretrain_epoch, pretrain_lr,
@@ -959,7 +962,7 @@ class OSEProcessor(BaseProcessor):
             loss_bt1 = self.btwins_batch(feat1, feat2, mode='temp_mask')
             loss_bt2 = self.btwins_batch(feat1, feat3, mode='joint_mask')
             bt_loss = loss_bt1 + loss_bt2
-            ose_loss, _, _, _ = self.compute_ose_loss(
+            ose_loss, proto_loss, mix_loss = self.compute_ose_loss(
                 epoch=epoch,
                 input1=input1,
                 input2_ose=input2,
@@ -982,7 +985,10 @@ class OSEProcessor(BaseProcessor):
                 copy_params(self.encoder, self.teacher_encoder)
                 copy_params(self.ose_projector, self.teacher_ose_projector)
 
-            self.log.update_batch("log/ose_pretrain/bt_loss", bt_loss.item())
+            self.log.update_batch("log/ose_pretrain/bt_total", bt_loss.item())
+            self.log.update_batch("log/ose_pretrain/ose_proto", proto_loss.item())
+            self.log.update_batch("log/ose_pretrain/ose_mix", mix_loss.item())
+            self.log.update_batch("log/ose_pretrain/ose_total", ose_loss.item())
             self.log.update_batch("log/ose_pretrain/total_loss", loss.item())
 
     @ex.capture

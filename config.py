@@ -119,6 +119,7 @@ def my_config():
     ose_tau_s = 0.1
     ose_tau_t = 0.04
     ose_lambda = 1.0
-    ose_mu = 0.5
+    ose_mu = 1.0
     ose_warmup_epoch = 5
     ose_mix_beta = 0.5
+    ose_log_detail = False
