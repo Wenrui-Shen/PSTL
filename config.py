@@ -58,19 +58,27 @@ def my_config():
     stgcn_weight_path = (
         './output/weight/v'+version+'_epoch_'+str(pretrain_epoch)+'_pretrain.pt'
     )
+    stgcn_ose_weight_path = (
+        './output/weight/v'+version+'_epoch_'+str(pretrain_epoch)+'_ose_pretrain.pt'
+    )
     gatr_weight_path = (
         './output/weight/v'+version+'_gatr_epoch_'+str(pretrain_epoch)+'_pretrain.pt'
     )
     stgcn_checkpoint_path = (
         './output/checkpoint/v'+version+'_epoch_'+str(pretrain_epoch)+'_pretrain_checkpoint.pt'
     )
+    stgcn_ose_checkpoint_path = (
+        './output/checkpoint/v'+version+'_epoch_'+str(pretrain_epoch)+'_ose_pretrain_checkpoint.pt'
+    )
     gatr_checkpoint_path = (
         './output/checkpoint/v'+version+'_gatr_epoch_'+str(pretrain_epoch)+'_pretrain_checkpoint.pt'
     )
-    train_mode = 'pretrain'  # lp / finetune / semi
+    train_mode = 'pretrain'  # pretrain / ose_pretrain / lp / ose_lp / finetune / semi
     stgcn_log_path = './output/log/v'+version+'_'+train_mode+'.log'
+    stgcn_ose_log_path = './output/log/v'+version+'_ose_'+train_mode+'.log'
     gatr_log_path = './output/log/v'+version+'_gatr_'+train_mode+'.log'
     stgcn_result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_'
+    stgcn_ose_result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_ose_'
     gatr_result_path = './result/'+dataset+'/'+split+'/'+view+'/'+version+'_gatr_'
     label_path = './result/'+dataset+'/'+split+'/label/label.pkl'
     ################################ GPU ################################
@@ -98,3 +106,19 @@ def my_config():
     pj_size = 6144
     lambd = 2e-4
     gatr_pj_size = 4096
+    ############################ OSESSL ################################
+    ose_num_classes = 60
+    ose_exemplar_seed = 1
+    ose_use_ema = True
+    ose_ema_momentum = 0.996
+    ose_embed_dim = 512
+    ose_projector_hidden_dim = 2048
+    ose_memory_size = 4096
+    ose_topk = 8
+    ose_alpha = 0.75
+    ose_tau_s = 0.1
+    ose_tau_t = 0.04
+    ose_lambda = 1.0
+    ose_mu = 0.5
+    ose_warmup_epoch = 5
+    ose_mix_beta = 0.5
