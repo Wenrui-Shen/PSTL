@@ -4,6 +4,7 @@ from dataset import DataSet, Feeder_semi
 from logger import Log
 
 import copy
+import os
 import torch
 import torch.nn as nn
 import numpy as np
@@ -181,10 +182,26 @@ class BaseProcessor:
         
     def load_weights(self, model=None, weight_path=None):
         if weight_path:
+            resolved_path = os.path.abspath(weight_path)
+            if not os.path.exists(weight_path):
+                raise FileNotFoundError(
+                    "Pretrained encoder weight file not found: {}".format(resolved_path)
+                )
+
             pretrained_dict = torch.load(weight_path)
+            source = "state_dict"
             if isinstance(pretrained_dict, dict) and "encoder" in pretrained_dict:
                 pretrained_dict = pretrained_dict["encoder"]
+                source = "checkpoint['encoder']"
             model.load_state_dict(pretrained_dict)
+            message = (
+                "Loaded encoder weights from {} "
+                "using {} with {} tensors"
+            ).format(resolved_path, source, len(pretrained_dict))
+            if hasattr(self, "log"):
+                self.log.logger.info(message)
+            else:
+                print(message)
 
     @ex.capture
     def initialize(self, train_mode, resume_path):
@@ -192,11 +209,15 @@ class BaseProcessor:
         self.checkpoint_path = resolve_checkpoint_path()
         self.log_path = resolve_log_path()
         self.result_path = resolve_result_path()
+        append_log = "pretrain" in train_mode and resume_path is not None
+        self.log = Log(log_path=self.log_path, append=append_log)
+        self.log.logger.info("Resolved weight_path: {}".format(os.path.abspath(self.weight_path)))
+        self.log.logger.info("Resolved checkpoint_path: {}".format(os.path.abspath(self.checkpoint_path)))
+        if train_mode == "ose_lp":
+            self.log.logger.info("OSE LP is loading the ST-GCN OSE pretrained encoder.")
         self.load_data()
         self.load_model()
         self.load_optim()
-        append_log = "pretrain" in train_mode and resume_path is not None
-        self.log = Log(log_path=self.log_path, append=append_log)
     
     @ex.capture
     def optimize(self, epoch_num):
